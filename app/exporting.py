@@ -1,0 +1,96 @@
+import math
+import os
+from copy import copy
+from datetime import date
+from io import BytesIO
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from docxtpl import DocxTemplate
+
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment
+
+
+def template_dir():
+    return Path(os.getenv("TEMPLATE_DIR", "templates"))
+
+
+def dates_text(values):
+    return "\n".join(date.fromisoformat(value).strftime("%Y.%m.%d") for value in values)
+
+
+def sourced(fields, key):
+    value = fields.get(key, "")
+    if value and fields.get(key + "_source") == "manufacturer" and not value.startswith("生产商"):
+        return "生产商：" + value
+    return value
+
+
+def excel_bytes(records, ledger_names):
+    workbook = load_workbook(template_dir() / "查验台账.xlsx")
+    original = workbook.active
+    sheets = []
+    for ledger_id in dict.fromkeys(row.ledger_id for row in records):
+        sheet = workbook.copy_worksheet(original)
+        sheets.append((sheet, ledger_names[ledger_id]))
+        # The supplied template has a title and header, no pre-filled business rows.
+        if sheet.max_row > 2:
+            sheet.delete_rows(3, sheet.max_row - 2)
+        for index, record in enumerate((r for r in records if r.ledger_id == ledger_id), 3):
+            f = record.fields
+            values = [date.fromisoformat(f["arrival_date"]) if f.get("arrival_date") else None,
+                      f.get("material_name"), dates_text(f.get("production_dates", [])), f.get("specification"),
+                      f.get("company_name"), sourced(f, "address"), sourced(f, "contact"), f.get("shelf_life"),
+                      f.get("received_quantity"), f.get("certificates"), f.get("sensory"), f.get("sampling_items"), f.get("notes")]
+            lines = 1
+            for column, value in enumerate(values, 1):
+                cell = sheet.cell(index, column)
+                cell._style = copy(sheet.cell(2, column)._style)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.value = value or None
+                if isinstance(value, str):
+                    # Labels beginning '=' are text from a person/image, never formulas.
+                    cell.data_type = "s"
+                    width = sheet.column_dimensions[cell.column_letter].width or 10
+                    lines = max(lines, sum(max(1, math.ceil(len(line) * 2 / width)) for line in value.splitlines()))
+            sheet.cell(index, 1).number_format = "yyyy.mm.dd"
+            sheet.row_dimensions[index].height = max(32, min(400, lines * 16))
+        sheet.print_title_rows = "1:2"
+        sheet.print_area = f"A1:M{sheet.max_row}"
+    for template in list(workbook.worksheets):
+        if all(template is not sheet for sheet, _ in sheets):
+            workbook.remove(template)
+    # Assign final names only after all template and temporary names are gone.
+    import uuid
+    for sheet, _ in sheets:
+        sheet.title = uuid.uuid4().hex[:31]
+    for sheet, name in sheets:
+        sheet.title = name
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def word_bytes(record):
+    template = DocxTemplate(template_dir() / "检验报告.docx")
+    fields = record.fields
+    report = record.report
+    context = fields | report | {
+        "production_dates": dates_text(fields.get("production_dates", [])),
+        "inspection_date": dates_text([report["inspection_date"]]) if report.get("inspection_date") else "",
+        "batch_blank": "", "items": [item | {'name': item.get('name', '') + (f"（{item['unit']}）" if item.get('unit') else '')} for item in record.items],
+        "report_reference": "其他检验项目依据该公司提供的内检报告为准" if report.get("internal_report") == "是" else "",
+    }
+    template.render({key: "" if value is None else value for key, value in context.items()}, autoescape=True)
+    output = BytesIO()
+    template.save(output)
+    return output.getvalue()
+
+
+def word_archive(records):
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        for record in records:
+            archive.writestr(f"report-{record.id}.docx", word_bytes(record))
+    return output.getvalue()

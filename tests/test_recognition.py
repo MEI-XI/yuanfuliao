@@ -1,0 +1,156 @@
+import time
+from io import BytesIO
+
+from PIL import Image
+
+from conftest import bootstrap
+from test_records import new_ledger
+
+
+def test_cloud_failure_keeps_local_result_and_does_not_prevent_saving(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new("RGB", (80, 100), "white").save(photo, format="JPEG")
+    upload = client.post(f"/api/ledgers/{ledger}/images", files={"file": ("photo.jpg", photo.getvalue(), "image/jpeg")})
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    # Replace only model inference / the external cloud boundary; parsing, tasks,
+    # persistence, permissions and record saving all use their real implementations.
+    client.app.state.scan_image = lambda path: {"texts": ["产品名称：甘氨酸", "生产日期：2026年01月14日", "规格：25kg/袋", "合格"], "boxes": []}
+    def unavailable(paths, texts):
+        raise TimeoutError("provider unavailable")
+    client.app.state.cloud_extract = unavailable
+    job = client.post(f"/api/ledgers/{ledger}/recognition", json={"image_ids": [image_id], "cloud_enabled": True}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result["local_status"] == "done" and result["cloud_status"] == "failed":
+            break
+        time.sleep(0.02)
+    assert result["fields"]["material_name"] == "甘氨酸"
+    assert result["fields"]["production_dates"] == ["2026-01-14"]
+    assert "received_quantity" not in result["fields"]
+    assert "sensory" not in result["fields"]
+    assert result["cloud_status"] == "failed"
+    saved = client.post(f"/api/ledgers/{ledger}/records", json={"fields": result["fields"], "image_ids": [image_id]})
+    assert saved.status_code == 201
+    assert client.get(f'/api/records/{saved.json()["id"]}').json()["image_ids"] == [image_id]
+    client.post("/api/logout")
+    assert client.get(f"/api/images/{image_id}").status_code == 401
+
+
+def test_local_ocr_does_not_mistake_manufacturer_for_material_or_watermark_for_date(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['河北华阳生物科技有限公司', '合格', '规', '格：25kg/袋（桶）', '生产日期：', '2026/10/07 09:40'], 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['fields'].get('material_name', '') == ''
+    assert result['fields'].get('production_dates', []) == []
+    assert result['fields']['specification'] == '25kg/袋（桶）'
+
+
+def test_supplier_preferred_and_compact_production_date_extracted_without_business_guesses(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['生产商：乙工厂', '供应商：甲商行', '供应商地址：郑州市测试路1号', '供应商电话：0371-12345678', '产品名称：L-半胱氨酸', '净含量：25kg', '生产日期、批号：20261001-1', '2026/10/08 16:06'], 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['fields']['company_name'] == '甲商行'
+    assert result['fields']['address_source'] == 'supplier'
+    assert result['fields']['contact_source'] == 'supplier'
+    assert result['fields']['production_dates'] == ['2026-10-01']
+    assert result['fields']['specification'] == '25kg'
+    assert 'received_quantity' not in result['fields']
+
+
+def test_saved_record_retains_recognition_evidence_for_all_viewers(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['品名：甘氨酸'], 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    response = client.post(f'/api/ledgers/{ledger}/records', json={'image_ids': [image_id], 'recognition_job_id': job['id']})
+    assert response.status_code == 201
+    assert client.get(f'/api/records/{response.json()["id"]}').json()['recognition_job_id'] == job['id']
+    client.post('/api/users', json={'username': 'reader', 'password': 'reader-password', 'role': 'user'})
+    client.post('/api/login', json={'username': 'reader', 'password': 'reader-password'})
+    evidence = client.get(f'/api/recognition/{job["id"]}')
+    assert evidence.status_code == 200
+    assert evidence.json()['evidence'][0]['texts'] == ['品名：甘氨酸']
+
+
+def test_label_title_and_split_date_are_extracted_instead_of_brand(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['合格', 'L-精氨酸', '佳斯特', '净', '含量：25kg', '生产日期：', '2026年09月19日', '保质期：', '2年'], 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['fields']['material_name'] == 'L-精氨酸'
+    assert result['fields']['specification'] == '25kg'
+    assert result['fields']['shelf_life'] == '2年'
+    assert result['fields']['production_dates'] == ['2026-09-19']
+
+
+def test_split_product_name_follows_label_row_not_nearer_material_row(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['产品名称：', '透明卷膜150mm', '同步NY/PE'], 'boxes': [
+        [[0,0],[80,0],[80,20],[0,20]], [[100,0],[500,0],[500,20],[100,20]], [[100,40],[220,40],[220,60],[100,60]]
+    ]}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['fields']['material_name'] == '透明卷膜150mm'
+
+
+def test_crop_phone_keeps_manufacturer_source_with_supplier_name(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': ['供应商：甲商行'], 'boxes': [], 'supplements': [{'texts': ['生产商电话：0311-12345678'], 'boxes': [], 'kind': 'crop'}]}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        result = client.get(f'/api/recognition/{job["id"]}').json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['fields']['company_name'] == '甲商行'
+    assert result['fields']['contact'] == '0311-12345678'
+    assert result['fields']['contact_source'] == 'manufacturer'

@@ -4,7 +4,11 @@
 
 ## 当前状态
 
-已整理业务需求、项目方案和 UI 设计。尚未开始应用代码开发。
+已实现本地试用版：账号权限、公司台账、图片分组与识别、人工核对、共享检验标准、修改历史、Excel/Word 导出。公司服务器部署在本地验收后进行。
+
+当前电脑双击 `启动本地测试.cmd`，浏览器访问 `http://127.0.0.1:8000`。首次进入建立管理员账号，由管理员分配其他账号。
+
+运行、手机访问、模板签名维护和迁移说明见 [本地运行与模板维护](docs/本地运行与模板维护.md)。OCR 实测方法与边界见 [OCR 实测](docs/OCR实测.md)。
 
 ## 项目文档
 
@@ -23,4 +27,21 @@
 - 录入采用图片与字段并排布局，列表采用台账表格布局，全站统一青色。
 - 本地测试满意后再部署公司服务器。
 
-仓库中的 UI 图片为概念示意，正式功能与字段以项目方案为准。实际业务模板、原始照片和运行数据不包含在此次初始化提交中。
+仓库中的 UI 图片为概念示意。实际业务模板、预置签名、原始照片、数据库和云端密钥不提交 GitHub。
+
+## 开发与验证
+
+Python 3.12、PostgreSQL 17、Node.js 22 以上。生产依赖锁在 `requirements.lock`，前端依赖锁在 `frontend/package-lock.json`。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.lock -r requirements-dev.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+# 按 .env.example 配置 DATABASE_URL，放好 templates 中的办公文件
+.\scripts\start.ps1
+```
+
+测试使用专用 PostgreSQL 数据库：设置 `TEST_DATABASE_URL` 后执行 `scripts/test.ps1`。浏览器测试在 `frontend` 执行 `npm test`，需安装 Chrome。每个测试使用独立 schema，不读取正式业务数据。首次本地 OCR 会下载开源模型，模型就绪后可离线识别。云端调用需管理员配置自己的智谱密钥。

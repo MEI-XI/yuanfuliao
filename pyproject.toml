@@ -1,0 +1,18 @@
+[project]
+name = "yuanfuliao"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "fastapi", "uvicorn", "sqlalchemy", "psycopg[binary]", "alembic",
+  "pydantic-settings", "python-multipart", "pillow", "openpyxl",
+  "python-docx", "docxtpl", "httpx", "argon2-cffi"
+]
+
+[project.optional-dependencies]
+test = ["pytest", "httpx2"]
+ocr = ["rapidocr", "onnxruntime"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,509 @@
+import hashlib
+import os
+import secrets
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from io import BytesIO
+from pathlib import Path
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerificationError
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse
+from PIL import Image, UnidentifiedImageError
+from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.models import Base, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
+from app.schemas import CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
+from app.storage import photo_path
+
+passwords = PasswordHasher()
+
+
+def user_view(user):
+    return {"id": user.id, "username": user.username, "role": user.role, "active": user.active}
+
+
+def record_view(item):
+    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "version",
+                                               "created_at", "updated_at", "checker_id", "checked_at", "material_id", "scheme_name", "items", "report", "image_ids", "recognition_job_id")}
+
+
+def create_app(database_url: str | None = None) -> FastAPI:
+    load_dotenv()
+    engine = create_engine(database_url or os.environ["DATABASE_URL"], pool_pre_ping=True)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        from alembic import command
+        from alembic.config import Config
+        migration = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
+        with engine.begin() as connection:
+            migration.attributes['connection'] = connection
+            command.upgrade(migration, 'head')
+        from app.recognition import LocalScanner, cloud_extract
+        app.state.scan_image = LocalScanner()
+        def configured_cloud(paths, texts):
+            with Session(engine) as session:
+                setting = session.get(Setting, "zhipu_key")
+                api_key = setting.value if setting else os.getenv("ZHIPU_API_KEY", "")
+            return cloud_extract(paths, texts, api_key)
+        app.state.cloud_extract = configured_cloud
+        app.state.local_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-ocr")
+        app.state.cloud_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cloud-vision")
+        with Session(engine) as session:
+            for job in session.scalars(select(RecognitionJob).where(RecognitionJob.local_status.in_(["queued", "running"]))):
+                job.local_status, job.error = "failed", "服务重启中断了识别，请重试"
+            for job in session.scalars(select(RecognitionJob).where(RecognitionJob.cloud_status.in_(["queued", "running"]))):
+                job.cloud_status, job.cloud_error = "failed", "服务重启中断了云端辅助，本地结果不受影响"
+            session.commit()
+        yield
+        app.state.local_pool.shutdown(wait=True)
+        app.state.cloud_pool.shutdown(wait=True)
+        engine.dispose()
+
+    app = FastAPI(title="原辅料查验", lifespan=lifespan)
+    app.state.engine = engine
+
+    def db():
+        with Session(engine) as session:
+            yield session
+
+    def current_user(request: Request, session: Session = Depends(db)):
+        token = request.cookies.get("session", "")
+        login = session.get(LoginSession, hashlib.sha256(token.encode()).hexdigest())
+        user = session.get(User, login.user_id) if login and login.expires_at > utcnow() else None
+        if not user or not user.active:
+            raise HTTPException(401, "请先登录")
+        return user
+
+    def administrator(user: User = Depends(current_user)):
+        if user.role != "admin":
+            raise HTTPException(403, "此操作需要管理员权限")
+        return user
+
+    @app.exception_handler(IntegrityError)
+    async def duplicate(request, exc):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=409, content={"detail": "名称已存在或关联数据有冲突"})
+
+    @app.get("/api/setup")
+    def setup_status(session: Session = Depends(db)):
+        return {"required": session.scalar(select(User.id).limit(1)) is None}
+
+    @app.post("/api/setup", status_code=201)
+    def setup(body: Credentials, session: Session = Depends(db)):
+        session.execute(text("SELECT pg_advisory_xact_lock(814014)"))
+        if session.scalar(select(User.id).limit(1)) is not None:
+            raise HTTPException(409, "已完成初始化")
+        user = User(username=body.username, password_hash=passwords.hash(body.password), role="admin")
+        session.add(user)
+        session.commit()
+        return user_view(user)
+
+    @app.post("/api/login")
+    def login(body: Credentials, response: Response, session: Session = Depends(db)):
+        user = session.scalar(select(User).where(User.username == body.username))
+        try:
+            valid = user and user.active and passwords.verify(user.password_hash, body.password)
+        except VerificationError:
+            valid = False
+        if not valid:
+            raise HTTPException(401, "账号或密码不正确")
+        token = secrets.token_urlsafe(32)
+        session.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
+                                 expires_at=utcnow() + timedelta(hours=12)))
+        session.commit()
+        response.set_cookie("session", token, httponly=True, samesite="strict", max_age=43200,
+                            secure=os.getenv("COOKIE_SECURE", "false").lower() == "true")
+        return user_view(user)
+
+    @app.get("/api/me")
+    def me(user: User = Depends(current_user)):
+        return user_view(user)
+
+    @app.post("/api/logout", status_code=204)
+    def logout(request: Request, response: Response, session: Session = Depends(db)):
+        token = request.cookies.get("session", "")
+        session.execute(delete(LoginSession).where(LoginSession.token_hash == hashlib.sha256(token.encode()).hexdigest()))
+        session.commit()
+        response.delete_cookie("session")
+
+    @app.get("/api/users")
+    def users(user: User = Depends(administrator), session: Session = Depends(db)):
+        return [user_view(item) for item in session.scalars(select(User).order_by(User.id))]
+
+    @app.get("/api/people")
+    def people(user: User = Depends(current_user), session: Session = Depends(db)):
+        return [{"id": item.id, "username": item.username} for item in session.scalars(select(User).order_by(User.id))]
+
+    @app.post("/api/users", status_code=201)
+    def add_user(body: UserCreate, user: User = Depends(administrator), session: Session = Depends(db)):
+        item = User(username=body.username, password_hash=passwords.hash(body.password), role=body.role)
+        session.add(item)
+        session.commit()
+        return user_view(item)
+
+    @app.patch("/api/users/{user_id}")
+    def change_user(user_id: int, body: UserChange, user: User = Depends(administrator), session: Session = Depends(db)):
+        session.execute(text("SELECT pg_advisory_xact_lock(814015)"))
+        item = session.get(User, user_id)
+        if not item:
+            raise HTTPException(404, "账号不存在")
+        if item.role == "admin" and item.active and (body.role == "user" or body.active is False):
+            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role == "admin", User.active.is_(True)).limit(1))
+            if other_admin is None:
+                raise HTTPException(409, "至少需要保留一个启用的管理员账号")
+        if body.role is not None:
+            item.role = body.role
+        if body.active is not None:
+            item.active = body.active
+        if body.password:
+            item.password_hash = passwords.hash(body.password)
+            session.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
+        session.commit()
+        return user_view(item)
+
+    @app.get("/api/ledgers")
+    def ledgers(user: User = Depends(current_user), session: Session = Depends(db)):
+        return [{"id": row.id, "name": row.name} for row in session.scalars(select(Ledger).order_by(Ledger.id))]
+
+    @app.post("/api/ledgers", status_code=201)
+    def add_ledger(body: LedgerInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        item = Ledger(name=body.name, name_key=body.name.casefold())
+        session.add(item)
+        session.commit()
+        return {"id": item.id, "name": item.name}
+
+    @app.patch("/api/ledgers/{ledger_id}")
+    def rename_ledger(ledger_id: int, body: LedgerInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        item = session.get(Ledger, ledger_id)
+        if not item:
+            raise HTTPException(404, "台账不存在")
+        item.name, item.name_key = body.name, body.name.casefold()
+        session.commit()
+        return {"id": item.id, "name": item.name}
+
+    def get_record(record_id, session):
+        item = session.get(Record, record_id)
+        if not item:
+            raise HTTPException(404, "记录不存在")
+        return item
+
+    def append_history(item, actor, action, session):
+        session.flush()
+        session.add(History(record_id=item.id, actor_id=actor.id, action=action, snapshot=jsonable_encoder(record_view(item))))
+
+    def editable_record(record_id, version, user, session):
+        item = session.scalar(select(Record).where(Record.id == record_id).with_for_update())
+        if not item:
+            raise HTTPException(404, "记录不存在")
+        if user.role != "admin" and item.creator_id != user.id:
+            raise HTTPException(403, "只能修改或核对自己创建的记录")
+        if item.status == "void":
+            raise HTTPException(409, "作废记录不能修改")
+        if item.version != version:
+            raise HTTPException(409, "记录已被修改，请重新打开后核对")
+        item.version += 1
+        item.updated_at = utcnow()
+        return item
+
+    @app.post("/api/ledgers/{ledger_id}/records", status_code=201)
+    def add_record(ledger_id: int, body: RecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+        if not session.get(Ledger, ledger_id):
+            raise HTTPException(404, "台账不存在")
+        validate_images(body.image_ids, ledger_id, user, session)
+        validate_job(body.recognition_job_id, body.image_ids, ledger_id, session)
+        material = session.get(Material, body.material_id) if body.material_id else None
+        if body.material_id and not material:
+            raise HTTPException(422, "物料不存在")
+        scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
+        if body.scheme_id and (not scheme or scheme.material_id != body.material_id):
+            raise HTTPException(422, "检验方案与物料不匹配")
+        if not scheme and material:
+            choices = list(session.scalars(select(Scheme).where(Scheme.material_id == material.id)))
+            if len(choices) == 1:
+                scheme = choices[0]
+        fields = body.fields.model_dump(mode="json")
+        if material and not fields["material_name"]:
+            fields["material_name"] = " ".join(filter(None, [material.name, material.model]))
+        items = [i.model_dump() for i in body.items] if body.items is not None else [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
+        if "sampling_items" not in body.fields.model_fields_set:
+            fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
+        item = Record(ledger_id=ledger_id, creator_id=user.id, fields=fields, material_id=body.material_id,
+                      scheme_name=scheme.name if scheme else "", items=items, report=body.report.model_dump(mode="json"), image_ids=list(dict.fromkeys(body.image_ids)), recognition_job_id=body.recognition_job_id)
+        session.add(item)
+        append_history(item, user, "created", session)
+        session.commit()
+        return record_view(item)
+
+    @app.get("/api/records/{record_id}")
+    def record(record_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+        return record_view(get_record(record_id, session))
+
+    @app.get("/api/records")
+    def all_records(user: User = Depends(current_user), session: Session = Depends(db)):
+        return [record_view(item) for item in session.scalars(select(Record).order_by(Record.id.desc()))]
+
+    @app.get("/api/ledgers/{ledger_id}/records")
+    def records(ledger_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+        return [record_view(row) for row in session.scalars(select(Record).where(Record.ledger_id == ledger_id).order_by(Record.id.desc()))]
+
+    @app.patch("/api/records/{record_id}")
+    def edit_record(record_id: int, body: RecordChange, user: User = Depends(current_user), session: Session = Depends(db)):
+        item = editable_record(record_id, body.version, user, session)
+        if "material_id" in body.model_fields_set or "scheme_id" in body.model_fields_set:
+            material_id = body.material_id if "material_id" in body.model_fields_set else item.material_id
+            if material_id and not session.get(Material, material_id):
+                raise HTTPException(422, "物料不存在")
+            scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
+            if body.scheme_id and (not scheme or scheme.material_id != material_id):
+                raise HTTPException(422, "检验方案与物料不匹配")
+            item.material_id = material_id
+            item.scheme_name = scheme.name if scheme else ""
+            item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
+            item.fields = item.fields | {"sampling_items": "、".join(i["name"] for i in item.items)}
+        if body.fields is not None:
+            item.fields = item.fields | body.fields.model_dump(mode="json", exclude_unset=True)
+        if body.items is not None:
+            item.items = [i.model_dump() for i in body.items]
+        if body.report is not None:
+            item.report = item.report | body.report.model_dump(mode="json", exclude_unset=True)
+        if body.image_ids is not None:
+            validate_images([i for i in body.image_ids if i not in item.image_ids], item.ledger_id, user, session)
+            item.image_ids = list(dict.fromkeys(body.image_ids))
+        if 'recognition_job_id' in body.model_fields_set:
+            validate_job(body.recognition_job_id, item.image_ids, item.ledger_id, session)
+            item.recognition_job_id = body.recognition_job_id
+        elif body.image_ids is not None and item.recognition_job_id:
+            job = session.get(RecognitionJob, item.recognition_job_id)
+            if set(job.image_ids) != set(item.image_ids):
+                item.recognition_job_id = None
+        item.status, item.checker_id, item.checked_at = "pending", None, None
+        append_history(item, user, "edited", session)
+        session.commit()
+        return record_view(item)
+
+    @app.post("/api/records/{record_id}/check")
+    def check_record(record_id: int, body: VersionInput, user: User = Depends(current_user), session: Session = Depends(db)):
+        item = editable_record(record_id, body.version, user, session)
+        item.status, item.checker_id, item.checked_at = "checked", user.id, utcnow()
+        append_history(item, user, "checked", session)
+        session.commit()
+        return record_view(item)
+
+    @app.get("/api/records/{record_id}/history")
+    def history(record_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+        get_record(record_id, session)
+        return [{"actor_id": h.actor_id, "action": h.action, "at": h.at, "snapshot": h.snapshot}
+                for h in session.scalars(select(History).where(History.record_id == record_id).order_by(History.id))]
+
+    @app.post("/api/records/{record_id}/void")
+    def void_record(record_id: int, body: VersionInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        item = editable_record(record_id, body.version, user, session)
+        item.status = "void"
+        append_history(item, user, "voided", session)
+        session.commit()
+        return record_view(item)
+
+    @app.get("/api/materials")
+    def materials(user: User = Depends(current_user), session: Session = Depends(db)):
+        return [{"id": m.id, "name": m.name, "model": m.model, "aliases": m.aliases}
+                for m in session.scalars(select(Material).order_by(Material.id))]
+
+    @app.post("/api/materials", status_code=201)
+    def add_material(body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        material = Material(**body.model_dump())
+        session.add(material)
+        session.commit()
+        return {"id": material.id, **body.model_dump()}
+
+    @app.put("/api/materials/{material_id}")
+    def edit_material(material_id: int, body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        material = session.get(Material, material_id)
+        if not material:
+            raise HTTPException(404, "物料不存在")
+        for key, value in body.model_dump().items():
+            setattr(material, key, value)
+        session.commit()
+        return {"id": material.id, **body.model_dump()}
+
+    @app.get("/api/schemes")
+    def schemes(material_id: int | None = None, user: User = Depends(current_user), session: Session = Depends(db)):
+        query = select(Scheme).order_by(Scheme.id)
+        if material_id:
+            query = query.where(Scheme.material_id == material_id)
+        return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items} for s in session.scalars(query)]
+
+    def save_scheme(body, session, scheme_id=None):
+        if not session.get(Material, body.material_id):
+            raise HTTPException(422, "物料不存在")
+        item = session.get(Scheme, scheme_id) if scheme_id else Scheme()
+        if not item:
+            raise HTTPException(404, "方案不存在")
+        item.material_id, item.name, item.items = body.material_id, body.name, [i.model_dump() for i in body.items]
+        session.add(item)
+        session.commit()
+        return {"id": item.id, **body.model_dump()}
+
+    @app.post("/api/schemes", status_code=201)
+    def add_scheme(body: SchemeInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        return save_scheme(body, session)
+
+    @app.put("/api/schemes/{scheme_id}")
+    def edit_scheme(scheme_id: int, body: SchemeInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        return save_scheme(body, session, scheme_id)
+
+    @app.get("/api/partners")
+    def partners(user: User = Depends(current_user), session: Session = Depends(db)):
+        return [{"id": p.id, "name": p.name, "kind": p.kind, "address": p.address, "contact": p.contact}
+                for p in session.scalars(select(Partner).order_by(Partner.id))]
+
+    def save_partner(body, session, partner_id=None):
+        item = session.get(Partner, partner_id) if partner_id else Partner()
+        if not item:
+            raise HTTPException(404, "单位不存在")
+        for key, value in body.model_dump().items():
+            setattr(item, key, value)
+        session.add(item)
+        session.commit()
+        return {"id": item.id, **body.model_dump()}
+
+    @app.post("/api/partners", status_code=201)
+    def add_partner(body: PartnerInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        return save_partner(body, session)
+
+    @app.put("/api/partners/{partner_id}")
+    def edit_partner(partner_id: int, body: PartnerInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        return save_partner(body, session, partner_id)
+
+    def export_records(body, session):
+        ids = list(dict.fromkeys(body.record_ids))
+        rows = [get_record(record_id, session) for record_id in ids]
+        if any(r.status == "void" for r in rows):
+            raise HTTPException(409, "所选记录中有作废记录，请取消选择")
+        if not body.include_pending and any(r.status == "pending" for r in rows):
+            raise HTTPException(409, "所选记录尚未核对，确认后才能导出")
+        return rows
+
+    @app.post("/api/exports/xlsx")
+    def export_excel(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
+        from app.exporting import excel_bytes
+        rows = export_records(body, session)
+        names = {row.ledger_id: session.get(Ledger, row.ledger_id).name for row in rows}
+        try:
+            content = excel_bytes(rows, names)
+        except FileNotFoundError:
+            raise HTTPException(503, "模板文件夹缺少查验台账.xlsx")
+        return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": 'attachment; filename="ledger.xlsx"'})
+
+    @app.post("/api/exports/docx")
+    def export_word(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
+        from app.exporting import word_archive, word_bytes
+        rows = export_records(body, session)
+        try:
+            content = word_bytes(rows[0]) if len(rows) == 1 else word_archive(rows)
+        except (FileNotFoundError, OSError):
+            raise HTTPException(503, "无法读取模板文件夹的检验报告.docx，请检查文件是否存在且已保存")
+        suffix = "docx" if len(rows) == 1 else "zip"
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if suffix == "docx" else "application/zip"
+        return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="reports.{suffix}"'})
+
+    def validate_images(image_ids, ledger_id, user, session):
+        for image_id in image_ids:
+            image = session.get(Photo, image_id)
+            if not image or image.ledger_id != ledger_id:
+                raise HTTPException(422, "图片不属于当前台账")
+            if image.owner_id != user.id and user.role != "admin":
+                raise HTTPException(403, "只能使用自己上传的图片")
+
+    @app.post("/api/ledgers/{ledger_id}/images", status_code=201)
+    def upload_image(ledger_id: int, file: UploadFile, user: User = Depends(current_user), session: Session = Depends(db)):
+        if not session.get(Ledger, ledger_id):
+            raise HTTPException(404, "台账不存在")
+        content = file.file.read(20 * 1024 * 1024 + 1)
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(413, "单张照片不能超过20MB")
+        try:
+            with Image.open(BytesIO(content)) as picture:
+                if picture.format not in {"JPEG", "PNG", "WEBP"} or picture.width * picture.height > 40_000_000:
+                    raise ValueError()
+                kind = picture.format
+                picture.verify()
+        except (UnidentifiedImageError, ValueError, OSError, Image.DecompressionBombError):
+            raise HTTPException(422, "请上传有效的 JPG、PNG 或 WebP 图片，最多4000万像素")
+        directory = Path(os.getenv("DATA_DIR", "data")) / "images"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (uuid.uuid4().hex + {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}[kind])
+        path.write_bytes(content)
+        photo = Photo(ledger_id=ledger_id, owner_id=user.id, path='images/' + path.name, filename=(file.filename or "图片")[:250], media_type=Image.MIME[kind])
+        session.add(photo)
+        session.commit()
+        return {"id": photo.id, "filename": photo.filename, "url": f"/api/images/{photo.id}"}
+
+    @app.get("/api/images/{image_id}")
+    def get_image(image_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+        photo = session.get(Photo, image_id)
+        if not photo:
+            raise HTTPException(404, "图片不存在")
+        if photo.owner_id != user.id and user.role != "admin":
+            attached = any(image_id in record.image_ids for record in session.scalars(select(Record).where(Record.ledger_id == photo.ledger_id)))
+            if not attached:
+                raise HTTPException(403, "图片尚未关联可查看记录")
+        return FileResponse(photo_path(photo.path), media_type=photo.media_type, headers={"Cache-Control": "private, no-store"})
+
+    def job_view(job):
+        return {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+
+    def validate_job(job_id, image_ids, ledger_id, session):
+        if job_id is None:
+            return
+        job = session.get(RecognitionJob, job_id)
+        if not job or job.ledger_id != ledger_id or set(job.image_ids) != set(image_ids):
+            raise HTTPException(422, '识别任务与本条记录图片不匹配')
+
+    @app.post("/api/ledgers/{ledger_id}/recognition", status_code=202)
+    def recognize(ledger_id: int, body: RecognitionInput, user: User = Depends(current_user), session: Session = Depends(db)):
+        validate_images(body.image_ids, ledger_id, user, session)
+        job = RecognitionJob(ledger_id=ledger_id, owner_id=user.id, image_ids=list(dict.fromkeys(body.image_ids)), cloud_enabled=body.cloud_enabled,
+                             cloud_status="queued" if body.cloud_enabled else "disabled")
+        session.add(job)
+        session.commit()
+        result = job_view(job)
+        from app.jobs import run_local
+        app.state.local_pool.submit(run_local, app, job.id)
+        return result
+
+    @app.get("/api/recognition/{job_id}")
+    def get_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+        job = session.get(RecognitionJob, job_id)
+        if not job:
+            raise HTTPException(404, "识别任务不存在")
+        if job.owner_id != user.id and user.role != "admin":
+            if not session.scalar(select(Record.id).where(Record.recognition_job_id == job.id).limit(1)):
+                raise HTTPException(403, "只能查看自己的或已保存记录的识别任务")
+        return job_view(job)
+
+    @app.get("/api/settings/cloud")
+    def cloud_settings(user: User = Depends(administrator), session: Session = Depends(db)):
+        setting = session.get(Setting, "zhipu_key")
+        return {"configured": bool(setting.value if setting else os.getenv("ZHIPU_API_KEY", "")), "model": "glm-4.1v-thinking-flash"}
+
+    @app.put("/api/settings/cloud")
+    def set_cloud(body: CloudSettingInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        session.merge(Setting(key="zhipu_key", value=body.api_key))
+        session.commit()
+        return {"configured": bool(body.api_key), "model": "glm-4.1v-thinking-flash"}
+
+    from fastapi.staticfiles import StaticFiles
+    frontend = Path(__file__).resolve().parents[1] / 'frontend' / 'dist'
+    if frontend.is_dir():
+        app.mount('/', StaticFiles(directory=str(frontend), html=True), name='frontend')
+    return app
