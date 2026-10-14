@@ -411,6 +411,7 @@ async function download(kind: 'xlsx' | 'docx') {
           <div v-if="recognitionLabel" class="recognition-progress" :class="{ working: recognizing, failed: group?.requestState === 'error' || group?.job?.local_status === 'failed' }" role="status" aria-live="polite">
             <strong><span v-if="recognizing" class="recognition-spinner" aria-hidden="true"></span>{{ recognitionLabel }}</strong>
             <span v-if="group?.job">云端辅助：{{ { queued: '等待本地结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，本地结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
+            <span v-if="group?.job?.cloud_status === 'failed' && group.job.cloud_error" class="error">{{ group.job.cloud_error }}</span>
             <span v-if="recognizing">可继续人工填写，无需重复点击识别</span>
           </div>
         </section>

@@ -17,6 +17,42 @@ test('首次管理员建立公司台账并保存允许空值的查验记录', as
   await expect(page.getByRole('table')).toContainText('已核对')
 })
 
+test('管理员保存密钥后可测试连接，未保存的新密钥不能误测旧配置', async ({ page }) => {
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.getByRole('button', { name: '管理与公共资料' }).click()
+  await page.getByRole('button', { name: '云端与模板' }).click()
+  await page.getByLabel('API 密钥').fill('browser-test-key')
+  await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: '保存密钥', exact: true }).click()
+  await expect(page.getByLabel('API 密钥')).toHaveValue('')
+  await page.getByRole('button', { name: '测试连接', exact: true }).click()
+  await expect(page.getByRole('button', { name: '测试中…' })).toBeDisabled()
+  await expect(page.getByRole('status').filter({ hasText: '连接成功' })).toBeVisible()
+  await page.getByLabel('API 密钥').fill('another-unsaved-key')
+  await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeDisabled()
+})
+
+test('云端认证失败原因显示在识别按钮旁，本地结果仍可填写', async ({ page }) => {
+  await page.route('**/api/recognition/*', async route => {
+    const response = await route.fetch()
+    const job = await response.json()
+    await route.fulfill({ response, json: { ...job, cloud_status: 'failed', cloud_error: '智谱密钥认证失败（HTTP 401），请保存完整密钥；本地结果已保留' } })
+  })
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.getByRole('button', { name: '进入青山科技' }).click()
+  await page.getByRole('button', { name: '上传与录入' }).click()
+  await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
+  await page.getByRole('button', { name: '开始识别', exact: true }).click()
+  await expect(page.locator('.upload-toolbar')).toContainText('HTTP 401')
+  await expect(page.getByLabel('物料名称、型号', { exact: true })).toHaveValue('甘氨酸')
+})
+
 test('手机上传多图可以调整分组，迟到的云端建议不覆盖人工填写', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')

@@ -517,6 +517,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.commit()
         return {"configured": bool(body.api_key), "model": "glm-4.1v-thinking-flash"}
 
+    @app.post("/api/settings/cloud/test")
+    def test_cloud(user: User = Depends(administrator)):
+        from app.recognition import CloudRecognitionError
+        try:
+            app.state.cloud_extract([], [["品名：连接测试物料"]])
+            return {"ok": True, "message": "连接成功：已验证密钥和模型调用。图片识别效果请上传包装照片验证。"}
+        except CloudRecognitionError as exc:
+            return {"ok": False, "message": str(exc)}
+        except Exception:
+            return {"ok": False, "message": "云端连接测试失败，请稍后重试；本地识别仍可使用"}
+
     from fastapi.staticfiles import StaticFiles
     frontend = Path(__file__).resolve().parents[1] / 'frontend' / 'dist'
     if frontend.is_dir():

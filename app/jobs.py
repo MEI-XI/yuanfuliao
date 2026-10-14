@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.models import Photo, RecognitionJob
-from app.recognition import combine_fields
+from app.recognition import CloudRecognitionError, combine_fields
 from app.storage import photo_path
 
 
@@ -40,9 +40,9 @@ def run_cloud(app, job_id, paths, evidence):
             job = session.get(RecognitionJob, job_id)
             job.cloud_fields, job.cloud_status = fields, "done"
             session.commit()
-    except Exception:
+    except Exception as exc:
         with Session(app.state.engine) as session:
             job = session.get(RecognitionJob, job_id)
             job.cloud_status = "failed"
-            job.cloud_error = "云端辅助不可用，本地结果已保留；可稍后重试"
+            job.cloud_error = (str(exc) + "；本地结果已保留") if isinstance(exc, CloudRecognitionError) else "云端辅助不可用，本地结果已保留；可稍后重试"
             session.commit()
