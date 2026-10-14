@@ -36,6 +36,12 @@ export const jobSchema = z.object({
   evidence: z.array(z.object({ texts: z.array(z.string()), boxes: z.array(z.unknown()),
     supplements: z.array(z.object({ texts: z.array(z.string()), kind: z.string() })).default([]) })),
   conflicts: z.record(z.string(), z.array(z.string())), error: z.string(), cloud_error: z.string(),
+  queue_ahead: z.number().default(0),
+  review_suggestions: z.object({
+    fields: suggestionSchema,
+    conflicts: z.record(z.string(), z.array(z.string())),
+    sources: z.array(z.object({ record_id: z.number(), version: z.number(), ledger_name: z.string(), checked_at: z.string() })),
+  }).default({ fields: {}, conflicts: {}, sources: [] }),
 })
 export type Job = z.infer<typeof jobSchema>
 export const materialSchema = z.object({ id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })

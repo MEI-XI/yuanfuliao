@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFi
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy import create_engine, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -459,8 +459,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 raise HTTPException(403, "图片尚未关联可查看记录")
         return FileResponse(photo_path(photo.path), media_type=photo.media_type, headers={"Cache-Control": "private, no-store"})
 
-    def job_view(job):
-        return {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+    def job_view(job, session):
+        from app.review_feedback import checked_suggestions
+        result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+        result['queue_ahead'] = session.scalar(select(func.count()).select_from(RecognitionJob).where(
+            RecognitionJob.id < job.id, RecognitionJob.local_status.in_(['queued', 'running']))) if job.local_status == 'queued' else 0
+        result['review_suggestions'] = checked_suggestions(job, session)
+        return result
 
     def validate_job(job_id, image_ids, ledger_id, session):
         if job_id is None:
@@ -472,24 +477,34 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.post("/api/ledgers/{ledger_id}/recognition", status_code=202)
     def recognize(ledger_id: int, body: RecognitionInput, user: User = Depends(current_user), session: Session = Depends(db)):
         validate_images(body.image_ids, ledger_id, user, session)
+        # Serialize submissions from one user so double-clicks and concurrent
+        # requests reuse the active job instead of growing the CPU queue.
+        session.execute(text('SELECT pg_advisory_xact_lock(814016, :owner)'), {'owner': user.id})
+        active = session.scalars(select(RecognitionJob).where(
+            RecognitionJob.owner_id == user.id, RecognitionJob.ledger_id == ledger_id,
+            or_(RecognitionJob.local_status.in_(['queued', 'running']), RecognitionJob.cloud_status.in_(['queued', 'running']))))
+        for existing in active:
+            if set(existing.image_ids) == set(body.image_ids) and existing.cloud_enabled == body.cloud_enabled:
+                return job_view(existing, session)
         job = RecognitionJob(ledger_id=ledger_id, owner_id=user.id, image_ids=list(dict.fromkeys(body.image_ids)), cloud_enabled=body.cloud_enabled,
                              cloud_status="queued" if body.cloud_enabled else "disabled")
         session.add(job)
         session.commit()
-        result = job_view(job)
+        result = job_view(job, session)
         from app.jobs import run_local
         app.state.local_pool.submit(run_local, app, job.id)
         return result
 
     @app.get("/api/recognition/{job_id}")
-    def get_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+    def get_job(job_id: int, response: Response, user: User = Depends(current_user), session: Session = Depends(db)):
         job = session.get(RecognitionJob, job_id)
         if not job:
             raise HTTPException(404, "识别任务不存在")
         if job.owner_id != user.id and user.role != "admin":
             if not session.scalar(select(Record.id).where(Record.recognition_job_id == job.id).limit(1)):
                 raise HTTPException(403, "只能查看自己的或已保存记录的识别任务")
-        return job_view(job)
+        response.headers['Cache-Control'] = 'no-store'
+        return job_view(job, session)
 
     @app.get("/api/settings/cloud")
     def cloud_settings(user: User = Depends(administrator), session: Session = Depends(db)):

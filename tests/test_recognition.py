@@ -7,6 +7,136 @@ from conftest import bootstrap
 from test_records import new_ledger
 
 
+def run_label(client, ledger, texts):
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
+    client.app.state.scan_image = lambda path: {'texts': texts, 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        job = client.get(f'/api/recognition/{job["id"]}').json()
+        if job['local_status'] in {'done', 'failed'}:
+            break
+        time.sleep(.02)
+    assert job['local_status'] == 'done'
+    return job
+
+
+def test_checked_corrections_suggest_stable_fields_only_and_with_source(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    texts = ['品名：甘氮酸', '生产商：测试食品有限公司', '规格：25kg/袋', '生产日期：20261001']
+    first = run_label(client, ledger, texts)
+    saved = client.post(f'/api/ledgers/{ledger}/records', json={
+        'recognition_job_id': first['id'], 'image_ids': first['image_ids'],
+        'fields': first['fields'] | {'material_name': '甘氨酸', 'address': '测试路1号', 'address_source': 'manufacturer', 'received_quantity': '100kg'},
+        'items': [{'name': '水分', 'result': '合格'}],
+    }).json()
+    next_job = run_label(client, ledger, texts)
+    assert next_job['review_suggestions']['fields'] == {}
+    checked = client.post(f'/api/records/{saved["id"]}/check', json={'version': saved['version']}).json()
+    suggestion = client.get(f'/api/recognition/{next_job["id"]}').json()['review_suggestions']
+    assert suggestion['fields']['material_name'] == '甘氨酸'
+    assert suggestion['fields']['address'] == '测试路1号'
+    assert suggestion['fields']['address_source'] == 'manufacturer'
+    assert suggestion['sources'][0]['record_id'] == saved['id']
+    assert suggestion['sources'][0]['version'] == checked['version']
+    assert not {'production_dates', 'arrival_date', 'received_quantity', 'result', 'sensory'} & suggestion['fields'].keys()
+    client.patch(f'/api/records/{saved["id"]}', json={'version': checked['version'], 'fields': {'address': '待重新核对'}})
+    assert client.get(f'/api/recognition/{next_job["id"]}').json()['review_suggestions']['fields'] == {}
+
+
+def test_feedback_rejects_ambiguous_contacts_different_specs_and_voided_records(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    texts = ['品名：甘氨酸', '生产商：测试食品有限公司', '规格：25kg/袋']
+    records = []
+    for phone in ['0311-11111111', '0311-22222222']:
+        job = run_label(client, ledger, texts)
+        saved = client.post(f'/api/ledgers/{ledger}/records', json={
+            'recognition_job_id': job['id'], 'image_ids': job['image_ids'],
+            'fields': job['fields'] | {'contact': phone, 'contact_source': 'manufacturer'},
+        }).json()
+        records.append(client.post(f'/api/records/{saved["id"]}/check', json={'version': saved['version']}).json())
+    matched = run_label(client, ledger, texts)
+    assert 'contact' not in matched['review_suggestions']['fields']
+    assert 'contact_source' not in matched['review_suggestions']['fields']
+    assert len(matched['review_suggestions']['conflicts']['contact']) == 2
+    different = run_label(client, ledger, texts[:2] + ['规格：20kg/袋'])
+    assert different['review_suggestions']['fields'] == {}
+    client.post(f'/api/records/{records[0]["id"]}/void', json={'version': records[0]['version']})
+    remaining = client.get(f'/api/recognition/{matched["id"]}').json()['review_suggestions']
+    assert remaining['fields']['contact'] == '0311-22222222'
+    assert len(remaining['sources']) == 1
+
+
+def test_conflicting_photo_identities_do_not_activate_history_autofill(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    texts = ['品名：甘氨酸', '生产商：测试食品有限公司', '规格：25kg/袋']
+    first = run_label(client, ledger, texts)
+    saved = client.post(f'/api/ledgers/{ledger}/records', json={
+        'recognition_job_id': first['id'], 'image_ids': first['image_ids'],
+        'fields': first['fields'] | {'address': '仅甘氨酸的地址'},
+    }).json()
+    client.post(f'/api/records/{saved["id"]}/check', json={'version': saved['version']})
+    other = run_label(client, ledger, ['品名：精氨酸', *texts[1:]])
+    images = first['image_ids'] + other['image_ids']
+    readings = iter([texts, ['品名：精氨酸', *texts[1:]]])
+    client.app.state.scan_image = lambda path: {'texts': next(readings), 'boxes': []}
+    mixed = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': images, 'cloud_enabled': False}).json()
+    for _ in range(100):
+        mixed = client.get(f'/api/recognition/{mixed["id"]}').json()
+        if mixed['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert mixed['conflicts']['material_name'] == ['甘氨酸', '精氨酸']
+    assert mixed['review_suggestions']['fields'] == {}
+    mixed_record = client.post(f'/api/ledgers/{ledger}/records', json={
+        'recognition_job_id': mixed['id'], 'image_ids': mixed['image_ids'],
+        'fields': mixed['fields'] | {'material_name': '精氨酸', 'address': '精氨酸的另一地址'},
+    }).json()
+    client.post(f'/api/records/{mixed_record["id"]}/check', json={'version': mixed_record['version']})
+    clean = run_label(client, ledger, texts)['review_suggestions']
+    assert [source['record_id'] for source in clean['sources']] == [saved['id']]
+    assert clean['fields']['material_name'] == '甘氨酸'
+
+
+def test_duplicate_inflight_recognition_reuses_job_and_queue_clears(client):
+    from threading import Event
+    bootstrap(client)
+    ledger = new_ledger(client)
+    photo = BytesIO()
+    Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
+    ids = [client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id'] for _ in range(2)]
+    started, release = Event(), Event()
+    def scan(path):
+        started.set()
+        assert release.wait(5)
+        return {'texts': ['品名：甘氨酸'], 'boxes': []}
+    client.app.state.scan_image = scan
+    try:
+        first = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [ids[0]], 'cloud_enabled': False}).json()
+        assert started.wait(2)
+        duplicate = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [ids[0]], 'cloud_enabled': False}).json()
+        assert duplicate['id'] == first['id']
+        second = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [ids[1]], 'cloud_enabled': False}).json()
+        queued = client.get(f'/api/recognition/{second["id"]}').json()
+        assert queued['local_status'] == 'queued'
+        assert queued['queue_ahead'] == 1
+    finally:
+        release.set()
+    for _ in range(100):
+        response = client.get(f'/api/recognition/{second["id"]}')
+        result = response.json()
+        if result['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert result['local_status'] == 'done'
+    assert result['queue_ahead'] == 0
+    assert response.headers['cache-control'] == 'no-store'
+
+
 def test_cloud_failure_keeps_local_result_and_does_not_prevent_saving(client):
     bootstrap(client)
     ledger = new_ledger(client)

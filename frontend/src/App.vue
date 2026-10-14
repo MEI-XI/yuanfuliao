@@ -30,7 +30,7 @@ const editing = ref<CheckRecord | null>(null)
 const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
 const items = ref<Item[]>([])
-type DraftGroup = { key: number; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean }
+type DraftGroup = { key: number; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
 let nextGroupKey = 0
 const groups = ref<DraftGroup[]>([])
 const activeGroup = ref(0)
@@ -44,7 +44,21 @@ const showPhoto = ref(true)
 const suggestedFields = computed(() => Object.entries(group.value?.job?.cloud_fields || {}))
 const localSuggestions = computed(() => Object.entries(group.value?.job?.fields || {}))
 const fieldNames: Record<string, string> = { arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', address_source: '地址来源', contact_source: '联系方式来源' }
-function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({}), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false } }
+function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({}), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, requestState: 'idle', pollError: '' } }
+const recognizing = computed(() => groups.value.some(g => g.requestState === 'submitting' || g.requestState === 'polling'))
+const interrupted = computed(() => groups.value.some(g => g.requestState === 'error'))
+const recognitionLabel = computed(() => {
+  const current = group.value
+  if (!current) return ''
+  if (current.requestState === 'error') return current.pollError
+  if (current.requestState === 'submitting') return '正在提交识别任务…'
+  const job = current.job
+  if (!job) return ''
+  if (job.local_status === 'queued') return `本地排队中 · 前方约 ${job.queue_ahead} 个任务`
+  if (job.local_status === 'running') return `本地识别中 · 共 ${job.image_ids.length} 张图片`
+  if (job.local_status === 'failed') return job.error || '本地识别失败，可以重试或手动填写'
+  return '本地识别已完成'
+})
 const catalog = ref<z.infer<typeof materialSchema>[]>([])
 const standards = ref<z.infer<typeof schemeSchema>[]>([])
 const partners = ref<z.infer<typeof partnerSchema>[]>([])
@@ -96,6 +110,13 @@ function switchGroup(index: number) {
   selectedImage.value = current.images[0] || 0; angle.value = 0
 }
 function markDirty(key: string) { group.value?.dirty.add(key) }
+function applyReviewSuggestion(key: string, value: unknown) {
+  applySuggestion(key, value)
+  if (key === 'address' || key === 'contact') {
+    const sourceKey = key + '_source'
+    applySuggestion(sourceKey, Reflect.get(group.value?.job?.review_suggestions.fields || {}, sourceKey) || '')
+  }
+}
 function applySuggestion(key: string, value: unknown) {
   const parsed = fieldsSchema.safeParse({ ...fields.value, [key]: value })
   if (parsed.success) { Object.assign(fields.value, parsed.data); markDirty(key) }
@@ -117,6 +138,8 @@ const filteredRecords = computed(() => records.value.filter(r =>
   (!filter.status || r.status === filter.status) && (!filter.mine || r.creator_id === user.value?.id) && (!filter.creator || r.creator_id === filter.creator) &&
   (!filter.from || (r.fields.arrival_date || '') >= filter.from) && (!filter.to || (!!r.fields.arrival_date && r.fields.arrival_date <= filter.to)),
 ))
+
+const selectedVisible = computed(() => filteredRecords.value.filter(r => r.status !== 'void' && selectedIds.value.includes(r.id)))
 
 async function perform(work: () => Promise<void>) {
   error.value = ''; notice.value = ''; busy.value = true
@@ -168,8 +191,19 @@ async function addLedger() {
     ledgerName.value = ''; createLedger.value = false; await loadLedgers()
   })
 }
-function openEditor(record: CheckRecord | null = null) {
-  if (record) ledger.value = ledgers.value.find(l => l.id === record.ledger_id) || null
+async function openEditor(record: CheckRecord | null = null) {
+  if (busy.value) return
+  await perform(async () => {
+  if (record) {
+    record = await api(`/records/${record.id}`, recordSchema, { cache: 'no-store' })
+    const index = records.value.findIndex(entry => entry.id === record?.id)
+    if (index >= 0) records.value[index] = record
+  }
+  for (const previous of groups.value) previous.generation++
+  if (record) {
+    const ledgerId = record.ledger_id
+    ledger.value = ledgers.value.find(l => l.id === ledgerId) || null
+  }
   editing.value = record
   fields.value = fieldsSchema.parse(record?.fields || { arrival_date: today() })
   report.value = reportSchema.parse(record?.report || {})
@@ -179,15 +213,20 @@ function openEditor(record: CheckRecord | null = null) {
   const current = group.value
   if (record?.recognition_job_id && current) {
     void api(`/recognition/${record.recognition_job_id}`, jobSchema).then(job => {
-      if (groups.value.includes(current) && current.generation === 0) current.job = job
+      if (groups.value.includes(current) && current.generation === 0) {
+        current.job = job
+        if (jobActive(job)) void monitorJob(current, job.id, 0, false)
+      }
     }).catch(problem => { error.value = problem instanceof Error ? problem.message : '识别原文加载失败' })
   }
   void loadLibrary().catch(problem => { error.value = problem instanceof Error ? problem.message : '公共资料加载失败' })
   error.value = ''; notice.value = ''; view.value = 'editor'
+  })
 }
 async function save(check: boolean) {
   await perform(async () => {
     if (!ledger.value) return
+    const savedGroup = group.value
     const body = { fields: { ...fields.value, arrival_date: fields.value.arrival_date || null }, report: { ...report.value, inspection_date: report.value.inspection_date || null }, items: items.value, image_ids: group.value?.images || [], recognition_job_id: group.value?.jobId || null }
     const record = editing.value
       ? await api(`/records/${editing.value.id}`, recordSchema, json('PATCH', { ...body, version: editing.value.version, ...(group.value?.schemeChanged ? { material_id: group.value.materialId, scheme_id: group.value.schemeId } : {}) }))
@@ -195,7 +234,11 @@ async function save(check: boolean) {
     editing.value = record
     if (check) await api(`/records/${record.id}/check`, recordSchema, json('POST', { version: record.version }))
     if (groups.value.length > 1) {
-      groups.value.splice(activeGroup.value, 1); editing.value = null; switchGroup(0)
+      const selectedGroup = group.value
+      const savedIndex = groups.value.findIndex(entry => entry === savedGroup)
+      if (savedIndex >= 0) groups.value.splice(savedIndex, 1)
+      editing.value = null
+      switchGroup(Math.max(0, groups.value.findIndex(entry => entry === selectedGroup)))
       notice.value = '当前记录已保存，请继续核对下一组'
     } else { await loadRecords(); view.value = 'ledger'; notice.value = check ? '记录已保存并核对' : '记录已保存，待核对' }
   })
@@ -215,6 +258,7 @@ async function uploadFiles(files: FileList | File[] | null) {
 }
 function fileChosen(event: Event) { if (event.target instanceof HTMLInputElement) { void uploadFiles(event.target.files); event.target.value = '' } }
 function mergePrevious(index: number) {
+  if (busy.value) return
   const current = groups.value[index]; const previous = groups.value[index - 1]
   if (!current || !previous) return
   const results = (entry: DraftGroup) => entry.items.filter(i => i.result || i.conclusion).map(i => [i.name, i.result, i.conclusion])
@@ -228,6 +272,7 @@ function mergePrevious(index: number) {
   groups.value.splice(index, 1); switchGroup(index - 1)
 }
 function moveImage(imageId: number, targetKey: number) {
+  if (busy.value) return
   const current = group.value; const target = groups.value.find(g => g.key === targetKey)
   if (!current || !target || target === current) return
   current.images = current.images.filter(id => id !== imageId); invalidateRecognition(current)
@@ -236,10 +281,12 @@ function moveImage(imageId: number, targetKey: number) {
 }
 function imageDestination(event: Event, imageId: number) { if (event.target instanceof HTMLSelectElement) moveImage(imageId, Number(event.target.value)) }
 function splitImage(imageId: number) {
+  if (busy.value) return
   const target = makeGroup(); groups.value.push(target); moveImage(imageId, target.key)
 }
-function invalidateRecognition(current: DraftGroup) { current.generation++; current.job = null; current.jobId = null }
+function invalidateRecognition(current: DraftGroup) { current.generation++; current.job = null; current.jobId = null; current.requestState = 'idle'; current.pollError = '' }
 function removeImage(imageId: number) {
+  if (busy.value) return
   if (!group.value) return
   group.value.images = group.value.images.filter(id => id !== imageId); invalidateRecognition(group.value)
   selectedImage.value = group.value.images[0] || 0
@@ -247,40 +294,74 @@ function removeImage(imageId: number) {
 async function recognizeGroup(current: DraftGroup) {
   if (!ledger.value || !current.images.length) return
   const generation = ++current.generation
-  const result = await api(`/ledgers/${ledger.value.id}/recognition`, jobSchema, json('POST', { image_ids: current.images, cloud_enabled: cloudEnabled.value }))
-  if (current.generation !== generation) return
-  current.job = result; current.jobId = result.id
+  current.pollError = ''; current.requestState = 'submitting'
+  try {
+    const result = current.job && jobActive(current.job) ? current.job : await api(`/ledgers/${ledger.value.id}/recognition`, jobSchema, { ...json('POST', { image_ids: current.images, cloud_enabled: cloudEnabled.value }), signal: AbortSignal.timeout(15000) })
+    if (current.generation !== generation) return
+    current.job = result; current.jobId = result.id
+    await monitorJob(current, result.id, generation, true)
+  } catch {
+    if (current.generation === generation) { current.requestState = 'error'; current.pollError = '识别提交未确认，请重试；已提交的任务会继续处理' }
+  }
+}
+function jobActive(job: Job) { return ['queued', 'running'].includes(job.local_status) || ['queued', 'running'].includes(job.cloud_status) }
+async function monitorJob(current: DraftGroup, jobId: number, generation: number, fill: boolean) {
+  current.requestState = 'polling'
   let applied = false
-  while (current.generation === generation) {
-    const job = await api(`/recognition/${result.id}`, jobSchema)
+  try { while (current.generation === generation && groups.value.includes(current)) {
+    const job = await api(`/recognition/${jobId}`, jobSchema, { cache: 'no-store', signal: AbortSignal.timeout(15000) })
     if (current.generation !== generation) return
     current.job = job
-    if (!applied && job.local_status === 'done') {
-      for (const [key, value] of Object.entries(job.fields)) {
+    if (fill && !applied && job.local_status === 'done') {
+      // Checked corrections take precedence only while the destination is blank.
+      const proposals = { ...job.fields, ...job.review_suggestions.fields }
+      for (const [key, value] of Object.entries(proposals)) {
+        if (key.endsWith('_source')) continue
         const existing: unknown = Reflect.get(current.fields, key)
+        const paired = key === 'address' || key === 'contact'
+        const sourceKey = key + '_source'
+        const source: unknown = Reflect.get(proposals, sourceKey) || ''
+        if (paired) {
+          const existingSource: unknown = Reflect.get(current.fields, sourceKey)
+          if (current.dirty.has(sourceKey) || (existingSource && existingSource !== source)) continue
+        }
         if (!current.dirty.has(key) && !job.conflicts[key] && (!existing || (Array.isArray(existing) && !existing.length))) {
-          const parsed = fieldsSchema.safeParse({ ...current.fields, [key]: value })
+          const parsed = fieldsSchema.safeParse({ ...current.fields, [key]: value, ...(paired ? { [sourceKey]: source } : {}) })
           if (parsed.success) Object.assign(current.fields, parsed.data)
         }
       }
       applied = true
     }
-    if (['done', 'failed'].includes(job.local_status) && ['done', 'failed', 'disabled'].includes(job.cloud_status)) break
+    if (!jobActive(job)) break
     await new Promise(resolve => setTimeout(resolve, 500))
+  } } catch {
+    if (current.generation === generation) { current.requestState = 'error'; current.pollError = '状态更新中断，请重试获取状态；后台任务仍会继续' }
+  } finally {
+    if (current.generation === generation && current.requestState !== 'error') current.requestState = 'idle'
   }
 }
 function startRecognition() {
+  if (recognizing.value) return
+  const retries = groups.value.filter(entry => entry.requestState === 'error')
+  if (retries.length) {
+    for (const current of retries) {
+      current.pollError = ''
+      if (current.jobId !== null) void monitorJob(current, current.jobId, ++current.generation, true)
+      else void recognizeGroup(current)
+    }
+    return
+  }
   for (const current of groups.value) {
     void recognizeGroup(current).catch(problem => { error.value = problem instanceof Error ? problem.message : '识别失败，可以手动填写' })
   }
 }
 async function download(kind: 'xlsx' | 'docx') {
   await perform(async () => {
-    const selected = records.value.filter(r => selectedIds.value.includes(r.id))
+    const selected = selectedVisible.value
     if (!selected.length) throw new Error('请先选择要导出的记录')
     const pending = selected.some(r => r.status === 'pending')
     if (pending && !window.confirm('所选记录包含待核对内容，仍要导出吗？')) return
-    const response = await raw(`/exports/${kind}`, json('POST', { record_ids: selectedIds.value, include_pending: pending }))
+    const response = await raw(`/exports/${kind}`, json('POST', { record_ids: selected.map(r => r.id), include_pending: pending }))
     const url = URL.createObjectURL(await response.blob())
     const anchor = document.createElement('a'); anchor.href = url
     anchor.download = kind === 'xlsx' ? '原辅料查验记录.xlsx' : selected.length === 1 ? '原辅料检验报告.docx' : '原辅料检验报告.zip'
@@ -316,7 +397,7 @@ async function download(kind: 'xlsx' | 'docx') {
       <div class="page-heading"><div><h1>原辅料查验记录</h1><p class="muted">查看全部记录，核对与修改自己的记录。</p></div><button v-if="!allCompanies" class="primary" @click="openEditor()">上传与录入</button></div>
       <section class="table-panel">
         <div class="filters"><label class="search-label">查找记录<input v-model="filter.text" type="search" placeholder="物料名称、供应商或生产商"></label><label>状态<select v-model="filter.status"><option value="">全部状态</option><option value="pending">待核对</option><option value="checked">已核对</option><option value="void">作废</option></select></label><label>到货日期从<input v-model="filter.from" type="date"></label><label>到<input v-model="filter.to" type="date"></label><label>创建人<select v-model="filter.creator"><option :value="0">所有人员</option><option v-for="person in people" :key="person.id" :value="person.id">{{ person.username }}</option></select></label><label class="checkbox-label"><input v-model="filter.mine" type="checkbox">我创建的</label></div>
-        <div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedIds.length }} 条</span><div><button :disabled="busy || !selectedIds.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedIds.length" @click="download('docx')">导出 Word</button></div></div>
+        <div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedVisible.length }} 条</span><div><button :disabled="busy || !selectedVisible.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedVisible.length" @click="download('docx')">导出 Word</button></div></div>
         <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies">公司台账</th><th>到货日期</th><th>物料名称、型号</th><th>生产日期</th><th>供应商或生产商</th><th>接收数量</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="record in filteredRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (user.role === 'admin' || user.id === record.creator_id) ? '核对 / 编辑' : '查看' }}</button></td></tr></tbody></table></div>
         <div v-if="!filteredRecords.length" class="empty">暂无记录。点击“上传与录入”开始。</div>
       </section>
@@ -324,12 +405,27 @@ async function download(kind: 'xlsx' | 'docx') {
     <main v-else class="editor-page">
       <nav class="breadcrumb"><button @click="view = 'ledger'">{{ ledger?.name }}台账</button><span>/</span><span>{{ editing ? '查看与核对' : '新增查验记录' }}</span></nav>
       <div class="editor-heading"><div><h1>{{ editing ? fields.material_name || '查验记录' : '图片识别与核对' }}</h1><p class="muted">对照原图核对，未获取的信息可以手动填写或留空。</p></div><div v-if="editing" class="record-meta"><span class="status" :class="editing.status">{{ statusText[editing.status] }}</span><small>创建人：{{ people.find(p => p.id === editing?.creator_id)?.username }}<br>核对人：{{ people.find(p => p.id === editing?.checker_id)?.username || '未核对' }}</small><button @click="showHistory">查看修改历史</button><button v-if="user.role === 'admin' && editing.status !== 'void'" class="danger-button" @click="voidRecord">作废记录</button></div></div>
-      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox">云端辅助</label><small>启用后会将照片发送给智谱；不可用时保留本地结果</small><button class="primary" :disabled="!groups.some(g => g.images.length)" @click="startRecognition">开始识别</button></section>
+      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox" :disabled="recognizing">云端辅助</label><small>启用后会将照片发送给智谱；不可用时保留本地结果</small>
+        <section class="recognition-controls" aria-label="识别操作与进度">
+          <button class="primary" :disabled="busy || recognizing || !groups.some(g => g.images.length)" @click="startRecognition">{{ recognizing ? '识别处理中…' : interrupted ? '重试获取状态' : '开始识别' }}</button>
+          <div v-if="recognitionLabel" class="recognition-progress" :class="{ working: recognizing, failed: group?.requestState === 'error' || group?.job?.local_status === 'failed' }" role="status" aria-live="polite">
+            <strong><span v-if="recognizing" class="recognition-spinner" aria-hidden="true"></span>{{ recognitionLabel }}</strong>
+            <span v-if="group?.job">云端辅助：{{ { queued: '等待本地结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，本地结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
+            <span v-if="recognizing">可继续人工填写，无需重复点击识别</span>
+          </div>
+        </section>
+      </section>
       <div v-if="groups.length > 1" class="group-strip"><div v-for="(entry, index) in groups" :key="entry.key" class="group-tab"><button :class="{ active: index === activeGroup }" @click="switchGroup(index)">记录 {{ index + 1 }} · {{ entry.images.length }} 张</button><button v-if="index > 0" class="text-button" @click="mergePrevious(index)">合并到上一组</button></div></div>
       <p v-for="suggestion in groupingSuggestions" :key="suggestion" class="notice">{{ suggestion }}</p><div class="editor-grid"><aside class="image-panel"><div class="panel-heading"><h2>包装图片</h2><button class="text-button" @click="showPhoto = !showPhoto">{{ showPhoto ? '折叠图片' : '展开图片' }}</button></div><p aria-label="当前图片分组" class="muted">记录 {{ activeGroup + 1 }} · {{ group?.images.length || 0 }} 张</p>
         <div v-if="editable" class="upload-drop" @dragover.prevent @drop.prevent="uploadFiles($event.dataTransfer?.files || null)"><label class="file-picker">选择照片 / 相册<input type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="选择包装照片" :disabled="busy" @change="fileChosen"></label><label class="file-picker camera-picker">拍照<input type="file" accept="image/*" capture="environment" aria-label="拍摄包装照片" :disabled="busy" @change="fileChosen"></label><small>支持拖入照片，每张最多 20MB</small></div>
         <template v-if="showPhoto"><div v-if="selectedImage" class="photo-viewer"><img :src="`/api/images/${selectedImage}`" alt="当前包装原图" :style="{ transform: `rotate(${angle}deg)` }" @click="showLarge = true"></div><div v-else class="image-placeholder"><div class="picture-icon">▧</div><p>本条记录暂无图片</p><small>可以先手动填写并保存</small></div><div v-if="selectedImage" class="photo-actions"><button @click="angle += 90">旋转查看</button><button @click="showLarge = true">放大原图</button></div><div class="thumbnails"><div v-for="photo in group?.images || []" :key="photo" class="thumbnail"><button :class="{ active: selectedImage === photo }" @click="selectedImage = photo; angle = 0"><img :src="`/api/images/${photo}`" alt="包装图片缩略图"></button><template v-if="editable"><button class="text-button" @click="removeImage(photo)">移除</button><button v-if="!editing && (group?.images.length || 0) > 1" class="text-button" @click="splitImage(photo)">拆成一组</button><select v-if="!editing && groups.length > 1" aria-label="移动图片到分组" :value="group?.key" @change="imageDestination($event, photo)"><option v-for="(entry, index) in groups" :key="entry.key" :value="entry.key">记录 {{ index + 1 }}</option></select></template></div></div></template>
-        <div v-if="group?.job" class="recognition-result"><p>本地识别：{{ { queued: '排队中', running: '识别中', done: '已完成', failed: '未完成' }[group.job.local_status] }}</p><p v-if="group.job.error" class="error">{{ group.job.error }}</p><p class="muted">云端辅助：{{ { queued: '等待本地结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，本地结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</p>
+        <div v-if="group?.job" class="recognition-result">
+          <section v-if="group.job.review_suggestions.sources.length" class="review-feedback" aria-label="历史复核参考">
+            <h3>已核对记录参考</h3><p>物料名称、单位及规格匹配时，仅自动补入空白字段；日期、数量和检验结果不沿用。</p>
+            <p v-for="source in group.job.review_suggestions.sources" :key="source.record_id">来源：{{ source.ledger_name }} · 记录 #{{ source.record_id }} · 版本 {{ source.version }} · {{ new Date(source.checked_at).toLocaleDateString('zh-CN') }} 已核对</p>
+            <div v-for="(value, key) in group.job.review_suggestions.fields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" @click="applyReviewSuggestion(key, value)">采用</button></div>
+            <p v-for="(values, key) in group.job.review_suggestions.conflicts" :key="key" class="conflict">历史{{ fieldNames[key] || key }}不一致：{{ values.join(' / ') }}，未自动采用，请核对。</p>
+          </section>
           <details v-if="group.job.evidence.length"><summary>原始识别文字</summary><pre>{{ group.job.evidence.map(e => [e.texts.join('\n'), ...e.supplements.map(s => '局部或倾斜校正识别：\n' + s.texts.join('\n'))].join('\n\n')).join('\n\n') }}</pre></details>
           <details v-if="localSuggestions.length"><summary>本地字段建议</summary><div v-for="[key, value] in localSuggestions" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" @click="applySuggestion(key, value)">填入</button></div></details>
           <div v-for="(values, key) in group.job.conflicts" :key="key" class="conflict"><p>{{ fieldNames[key] || key }}存在多个识别值，请对照原图选择：</p><button v-for="value in values" :key="value" @click="applySuggestion(key, value)">{{ value }}</button></div>
@@ -337,7 +433,7 @@ async function download(kind: 'xlsx' | 'docx') {
         </div>
       </aside>
         <div class="form-panel"><fieldset :disabled="!editable || busy" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><label v-for="field in textFields" :key="field.key">{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)"></label><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div></section>
-          <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
+          <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
           <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates"></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写"></textarea></label><label class="wide">抽检项目<input v-model="fields.sampling_items"></label><label class="wide">备注<textarea v-model="fields.notes" rows="2"></textarea></label></div></section>
           <section class="form-section"><h2>检验项目</h2><label class="library-selector">检验标准方案<select :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">结果与结论每次手动填写，可以留空。</p><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>单位<input v-model="item.unit"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
           <section class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging"></label><label>检验依据<input v-model="report.basis"></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label><label>检验员<input v-model="report.inspector"></label><label>批准<input v-model="report.approver"></label></div><p class="muted">报告会使用模板文件夹中的签名图片。</p></section>
