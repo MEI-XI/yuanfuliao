@@ -1,6 +1,7 @@
 from typing import Literal
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -84,6 +85,12 @@ class RecordCreate(Input):
 
 class VersionInput(Input):
     version: int = Field(ge=1)
+
+
+class BatchRecordCreate(Input):
+    request_id: UUID
+    mark_checked: bool = False
+    records: list[RecordCreate] = Field(min_length=1, max_length=200)
 
 
 class RecordChange(VersionInput):

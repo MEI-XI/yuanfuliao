@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import secrets
 import uuid
@@ -21,8 +22,9 @@ from sqlalchemy import create_engine, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Base, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
-from app.schemas import CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
+from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
+from app.schemas import BatchRecordCreate, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
+from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 
 passwords = PasswordHasher()
@@ -33,7 +35,7 @@ def user_view(user):
 
 
 def record_view(item):
-    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "inspection_enabled", "version",
+    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "voided_at", "inspection_enabled", "version",
                                                "created_at", "updated_at", "checker_id", "checked_at", "material_id", "scheme_name", "items", "report", "image_ids", "recognition_job_id")}
 
 
@@ -65,10 +67,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
             for job in session.scalars(select(RecognitionJob).where(RecognitionJob.cloud_status.in_(["queued", "running"]))):
                 job.cloud_status, job.cloud_error = "failed", "服务重启中断了云端辅助，本地结果不受影响"
             session.commit()
-        yield
-        app.state.local_pool.shutdown(wait=True)
-        app.state.cloud_pool.shutdown(wait=True)
-        engine.dispose()
+        cleaner = RecycleCleaner(engine)
+        cleaner.start()
+        try:
+            yield
+        finally:
+            cleaner.stop()
+            app.state.local_pool.shutdown(wait=True)
+            app.state.cloud_pool.shutdown(wait=True)
+            engine.dispose()
 
     app = FastAPI(title="原辅料查验", lifespan=lifespan)
     app.state.engine = engine
@@ -197,7 +204,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     def get_record(record_id, session):
         item = session.get(Record, record_id)
-        if not item:
+        if not item or record_expired(item):
             raise HTTPException(404, "记录不存在")
         return item
 
@@ -207,7 +214,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     def editable_record(record_id, version, user, session):
         item = session.scalar(select(Record).where(Record.id == record_id).with_for_update())
-        if not item:
+        if not item or record_expired(item):
             raise HTTPException(404, "记录不存在")
         if user.role != "admin" and item.creator_id != user.id:
             raise HTTPException(403, "只能修改或核对自己创建的记录")
@@ -219,8 +226,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         item.updated_at = utcnow()
         return item
 
-    @app.post("/api/ledgers/{ledger_id}/records", status_code=201)
-    def add_record(ledger_id: int, body: RecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+    register_recycle_routes(app, db, current_user, administrator, record_view, append_history)
+
+    def create_record(ledger_id, body, user, session):
         if not session.get(Ledger, ledger_id):
             raise HTTPException(404, "台账不存在")
         validate_images(body.image_ids, ledger_id, user, session)
@@ -241,13 +249,46 @@ def create_app(database_url: str | None = None) -> FastAPI:
         items = [i.model_dump() for i in body.items] if body.items is not None else [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
         if "sampling_items" not in body.fields.model_fields_set:
             fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
+        report = body.report.model_dump(mode="json")
+        if scheme and 'basis' not in body.report.model_fields_set:
+            report['basis'] = scheme.name
         item = Record(ledger_id=ledger_id, creator_id=user.id, fields=fields, material_id=body.material_id,
                       inspection_enabled=body.inspection_enabled,
-                      scheme_name=scheme.name if scheme else "", items=items, report=body.report.model_dump(mode="json"), image_ids=list(dict.fromkeys(body.image_ids)), recognition_job_id=body.recognition_job_id)
+                      scheme_name=scheme.name if scheme else "", items=items, report=report, image_ids=list(dict.fromkeys(body.image_ids)), recognition_job_id=body.recognition_job_id)
         session.add(item)
         append_history(item, user, "created", session)
+        return item
+
+    @app.post("/api/ledgers/{ledger_id}/records", status_code=201)
+    def add_record(ledger_id: int, body: RecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+        item = create_record(ledger_id, body, user, session)
         session.commit()
         return record_view(item)
+
+    @app.post('/api/ledgers/{ledger_id}/records/batch', status_code=201)
+    def add_batch(ledger_id: int, body: BatchRecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+        request_id = str(body.request_id)
+        payload_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude_unset=True), sort_keys=True).encode()).hexdigest()
+        session.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'record-batch:' + request_id})
+        receipt = session.get(BatchSubmission, request_id)
+        if receipt:
+            if receipt.owner_id != user.id or receipt.ledger_id != ledger_id or receipt.payload_hash != payload_hash:
+                raise HTTPException(409, '本批次已提交，请返回台账查看已保存记录')
+            saved = [session.get(Record, record_id) for record_id in receipt.record_ids]
+            if any(item is None or record_expired(item) for item in saved):
+                raise HTTPException(409, '本批次已保存，部分记录已清理，请返回台账查看')
+            return [record_view(item) for item in saved]
+        saved = [create_record(ledger_id, draft, user, session) for draft in body.records]
+        if body.mark_checked:
+            for item in saved:
+                item.status, item.checker_id, item.checked_at = 'checked', user.id, utcnow()
+                item.version += 1
+                item.updated_at = item.checked_at
+                append_history(item, user, 'checked', session)
+        session.add(BatchSubmission(id=request_id, owner_id=user.id, ledger_id=ledger_id,
+                                    payload_hash=payload_hash, record_ids=[item.id for item in saved]))
+        session.commit()
+        return [record_view(item) for item in saved]
 
     @app.get("/api/records/{record_id}")
     def record(record_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
@@ -255,11 +296,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/records")
     def all_records(user: User = Depends(current_user), session: Session = Depends(db)):
-        return [record_view(item) for item in session.scalars(select(Record).order_by(Record.id.desc()))]
+        return [record_view(item) for item in session.scalars(select(Record).where(Record.status != 'void').order_by(Record.id.desc()))]
 
     @app.get("/api/ledgers/{ledger_id}/records")
     def records(ledger_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
-        return [record_view(row) for row in session.scalars(select(Record).where(Record.ledger_id == ledger_id).order_by(Record.id.desc()))]
+        return [record_view(row) for row in session.scalars(select(Record).where(Record.ledger_id == ledger_id, Record.status != 'void').order_by(Record.id.desc()))]
 
     @app.patch("/api/records/{record_id}")
     def edit_record(record_id: int, body: RecordChange, user: User = Depends(current_user), session: Session = Depends(db)):
@@ -281,6 +322,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
             scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
             if body.scheme_id and not scheme:
                 raise HTTPException(422, "检验方案不存在")
+            if item.report.get('basis', '') == item.scheme_name and (body.report is None or 'basis' not in body.report.model_fields_set):
+                item.report = item.report | {'basis': scheme.name if scheme else ''}
             item.scheme_name = scheme.name if scheme else ""
             item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
             item.fields = item.fields | {"sampling_items": "、".join(i["name"] for i in item.items)}
@@ -323,6 +366,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def void_record(record_id: int, body: VersionInput, user: User = Depends(administrator), session: Session = Depends(db)):
         item = editable_record(record_id, body.version, user, session)
         item.status = "void"
+        item.voided_at = utcnow()
         append_history(item, user, "voided", session)
         session.commit()
         return record_view(item)

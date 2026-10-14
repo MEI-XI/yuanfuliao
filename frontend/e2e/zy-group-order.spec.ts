@@ -20,6 +20,32 @@ async function openBatch(page: Page) {
   return images
 }
 
+async function expectGroupsBesidePhoto(page: Page, mobile = false) {
+  const rail = await page.getByRole('region', { name: '批量记录排序' }).boundingBox()
+  const photo = await page.locator('.photo-viewer').boundingBox()
+  if (!rail || !photo) throw new Error('分组栏或图片未显示')
+  expect(rail.x + rail.width).toBeLessThanOrEqual(photo.x)
+  expect(rail.y).toBeLessThan(photo.y + photo.height)
+  expect(rail.y + rail.height).toBeGreaterThan(photo.y)
+  expect(rail.width).toBeLessThanOrEqual(mobile ? 120 : 210)
+  expect(photo.width).toBeGreaterThan(rail.width)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width)
+  await page.locator('.photo-workspace').screenshot({ path: `../tmp/group-rail-${mobile ? 'mobile' : 'desktop'}.png` })
+}
+
+test('分组紧凑排列在图片左侧，子图片可切换到所属记录和指定图片', async ({ page }) => {
+  const images = await openBatch(page)
+  await expectGroupsBesidePhoto(page)
+  const list = page.getByRole('list', { name: '图片分组' })
+  await list.getByRole('listitem').nth(1).getByRole('button', { name: '合并到上一组' }).click()
+  await page.getByRole('button', { name: '记录 2 · 1 张', exact: true }).click()
+  await page.getByRole('button', { name: '预览记录 1 的图片 2', exact: true }).click()
+  await expect(page.getByLabel('当前图片分组')).toHaveText('记录 1 · 2 张')
+  await expect(page.getByLabel('物料名称、型号', { exact: true })).toHaveValue('排序甲')
+  await expect(page.getByAltText('当前包装原图', { exact: true })).toHaveAttribute('src', images[1]!)
+  await expect(page.getByRole('button', { name: '预览记录 1 的图片 2', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
 test('桌面纵向拖动分组后保留当前记录、填写内容和图片对应关系', async ({ page }) => {
   const images = await openBatch(page)
   const list = page.getByRole('list', { name: '图片分组' })
@@ -52,6 +78,14 @@ test('桌面纵向拖动分组后保留当前记录、填写内容和图片对�
 
 test.describe('手机触摸排序', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+
+  test('手机分组和子图片保持在预览左侧并可点选', async ({ page }) => {
+    const images = await openBatch(page)
+    await expectGroupsBesidePhoto(page, true)
+    await page.getByRole('button', { name: '预览记录 1 的图片 1', exact: true }).click()
+    await expect(page.getByLabel('物料名称、型号', { exact: true })).toHaveValue('排序甲')
+    await expect(page.getByAltText('当前包装原图', { exact: true })).toHaveAttribute('src', images[0]!)
+  })
 
   test('触摸手柄把末组移到首组，记录内容随分组移动且可继续合并', async ({ page, context }) => {
     const images = await openBatch(page)

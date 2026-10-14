@@ -15,6 +15,7 @@ export const reportSchema = z.object({ packaging: z.string().default(''), basis:
 export const recordSchema = z.object({
   id: z.number(), ledger_id: z.number(), creator_id: z.number(), version: z.number(),
   inspection_enabled: z.boolean().default(true),
+  voided_at: z.string().nullable().default(null),
   status: z.enum(['pending', 'checked', 'void']), fields: fieldsSchema, items: z.array(itemSchema), report: reportSchema,
   image_ids: z.array(z.number()), material_id: z.number().nullable(), scheme_name: z.string(),
   recognition_job_id: z.number().nullable().default(null),
@@ -49,6 +50,10 @@ export const materialSchema = z.object({ id: z.number(), name: z.string(), model
 export const schemeSchema = z.object({ id: z.number(), material_id: z.number().nullable(), name: z.string(), items: z.array(itemSchema) })
 export const partnerSchema = z.object({ id: z.number(), name: z.string(), kind: z.enum(['supplier', 'manufacturer']), address: z.string(), contact: z.string() })
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message) }
+}
+
 export async function raw(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
@@ -56,7 +61,7 @@ export async function raw(path: string, init: RequestInit = {}): Promise<Respons
   if (!response.ok) {
     const result: unknown = await response.json().catch(() => null)
     const error = z.object({ detail: z.string() }).safeParse(result)
-    throw new Error(error.success ? error.data.detail : `操作失败（${response.status}），请检查填写内容`)
+    throw new ApiError(error.success ? error.data.detail : `操作失败（${response.status}），请检查填写内容`, response.status)
   }
   return response
 }

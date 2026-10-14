@@ -48,6 +48,7 @@ class Record(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     checker_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id"), nullable=True)
     scheme_name: Mapped[str] = mapped_column(String(120), default="")
     items: Mapped[list] = mapped_column(JSON, default=list)
@@ -64,6 +65,15 @@ class History(Base):
     action: Mapped[str] = mapped_column(String(24))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class BatchSubmission(Base):
+    __tablename__ = "batch_submissions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    ledger_id: Mapped[int] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    record_ids: Mapped[list] = mapped_column(JSON)
 
 
 class Material(Base):
