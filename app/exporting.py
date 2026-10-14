@@ -1,12 +1,15 @@
 import math
 import os
+import re
 from copy import copy
 from datetime import date
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
+from zoneinfo import ZoneInfo
 
 from docxtpl import DocxTemplate
+from jinja2.sandbox import SandboxedEnvironment
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
@@ -27,17 +30,22 @@ def sourced(fields, key):
     return value
 
 
-def excel_bytes(records, ledger_names):
-    workbook = load_workbook(template_dir() / "查验台账.xlsx")
+def excel_bytes(records, ledger_names, template=None):
+    workbook = load_workbook(BytesIO(template) if template is not None else template_dir() / "查验台账.xlsx")
     original = workbook.active
     sheets = []
     for ledger_id in dict.fromkeys(row.ledger_id for row in records):
         sheet = workbook.copy_worksheet(original)
         sheets.append((sheet, ledger_names[ledger_id]))
+        company_records = [record for record in records if record.ledger_id == ledger_id]
+        first_arrival = company_records[0].fields.get("arrival_date")
+        year = f"{date.fromisoformat(first_arrival).year}年" if first_arrival else ""
+        sheet['A1'] = re.sub(r"原辅料查验记录(?:\s*(?:X|\d{4})\s*年)?",
+                             "原辅料查验记录" + year, sheet['A1'].value)
         # The supplied template has a title and header, no pre-filled business rows.
         if sheet.max_row > 2:
             sheet.delete_rows(3, sheet.max_row - 2)
-        for index, record in enumerate((r for r in records if r.ledger_id == ledger_id), 3):
+        for index, record in enumerate(company_records, 3):
             f = record.fields
             values = [date.fromisoformat(f["arrival_date"]) if f.get("arrival_date") else None,
                       f.get("material_name"), dates_text(f.get("production_dates", [])), f.get("specification"),
@@ -72,8 +80,8 @@ def excel_bytes(records, ledger_names):
     return output.getvalue()
 
 
-def word_bytes(record):
-    template = DocxTemplate(template_dir() / "检验报告.docx")
+def word_bytes(record, template=None):
+    template = DocxTemplate(BytesIO(template) if template is not None else template_dir() / "检验报告.docx")
     fields = record.fields
     report = record.report
     context = fields | report | {
@@ -82,15 +90,36 @@ def word_bytes(record):
         "batch_blank": "", "items": [item | {'name': item.get('name', '') + (f"（{item['unit']}）" if item.get('unit') else '')} for item in record.items],
         "report_reference": "其他检验项目依据该公司提供的内检报告为准" if report.get("internal_report") == "是" else "",
     }
-    template.render({key: "" if value is None else value for key, value in context.items()}, autoescape=True)
+    template.render({key: "" if value is None else value for key, value in context.items()},
+                    jinja_env=SandboxedEnvironment(autoescape=True), autoescape=True)
     output = BytesIO()
     template.save(output)
     return output.getvalue()
 
 
-def word_archive(records):
+def report_filename(record):
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', record.fields.get('material_name') or '').strip(' .') or '未命名'
+    # Leave room for the date and duplicate suffix, even for surrogate-pair characters.
+    name = name[:100]
+    # Windows reserves device names even when they have an extension.
+    if re.fullmatch(r'CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]', name.split('.')[0], re.IGNORECASE):
+        name = '_' + name
+    inspection_date = record.report.get('inspection_date')
+    report_date = date.fromisoformat(inspection_date) if inspection_date else record.created_at.astimezone(ZoneInfo('Asia/Shanghai')).date()
+    return f'{name}_{report_date:%Y.%m.%d}.docx'
+
+
+def word_archive(records, template=None):
     output = BytesIO()
+    used_names = set()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         for record in records:
-            archive.writestr(f"report-{record.id}.docx", word_bytes(record))
+            filename = report_filename(record)
+            stem = filename[:-5]
+            suffix = 0
+            while filename.casefold() in used_names:
+                suffix += 1
+                filename = f'{stem}({suffix}).docx'
+            used_names.add(filename.casefold())
+            archive.writestr(filename, word_bytes(record, template))
     return output.getvalue()

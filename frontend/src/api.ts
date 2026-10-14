@@ -45,7 +45,7 @@ export const jobSchema = z.object({
 })
 export type Job = z.infer<typeof jobSchema>
 export const materialSchema = z.object({ id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })
-export const schemeSchema = z.object({ id: z.number(), material_id: z.number(), name: z.string(), items: z.array(itemSchema) })
+export const schemeSchema = z.object({ id: z.number(), material_id: z.number().nullable(), name: z.string(), items: z.array(itemSchema) })
 export const partnerSchema = z.object({ id: z.number(), name: z.string(), kind: z.enum(['supplier', 'manufacturer']), address: z.string(), contact: z.string() })
 
 export async function raw(path: string, init: RequestInit = {}): Promise<Response> {

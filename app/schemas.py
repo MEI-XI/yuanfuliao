@@ -108,7 +108,7 @@ class StandardItem(Input):
 
 
 class SchemeInput(Input):
-    material_id: int
+    material_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
     items: list[StandardItem] = Field(default_factory=list)
 
@@ -116,6 +116,7 @@ class SchemeInput(Input):
 class ExportInput(Input):
     record_ids: list[int] = Field(min_length=1, max_length=500)
     include_pending: bool = False
+    template_base64: str | None = Field(default=None, max_length=14_000_000)
 
 
 class PartnerInput(Input):

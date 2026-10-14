@@ -76,7 +76,7 @@ class Material(Base):
 class Scheme(Base):
     __tablename__ = "schemes"
     id: Mapped[int] = mapped_column(primary_key=True)
-    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(120))
     items: Mapped[list] = mapped_column(JSON)
 

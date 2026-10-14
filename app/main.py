@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
+from jinja2 import TemplateError
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
@@ -224,9 +226,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if body.material_id and not material:
             raise HTTPException(422, "物料不存在")
         scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
-        if body.scheme_id and (not scheme or scheme.material_id != body.material_id):
-            raise HTTPException(422, "检验方案与物料不匹配")
-        if not scheme and material:
+        if body.scheme_id and not scheme:
+            raise HTTPException(422, "检验方案不存在")
+        if "scheme_id" not in body.model_fields_set and material:
             choices = list(session.scalars(select(Scheme).where(Scheme.material_id == material.id)))
             if len(choices) == 1:
                 scheme = choices[0]
@@ -258,14 +260,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.patch("/api/records/{record_id}")
     def edit_record(record_id: int, body: RecordChange, user: User = Depends(current_user), session: Session = Depends(db)):
         item = editable_record(record_id, body.version, user, session)
-        if "material_id" in body.model_fields_set or "scheme_id" in body.model_fields_set:
-            material_id = body.material_id if "material_id" in body.model_fields_set else item.material_id
-            if material_id and not session.get(Material, material_id):
+        if "material_id" in body.model_fields_set:
+            if body.material_id and not session.get(Material, body.material_id):
                 raise HTTPException(422, "物料不存在")
+            item.material_id = body.material_id
+        if "scheme_id" in body.model_fields_set:
             scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
-            if body.scheme_id and (not scheme or scheme.material_id != material_id):
-                raise HTTPException(422, "检验方案与物料不匹配")
-            item.material_id = material_id
+            if body.scheme_id and not scheme:
+                raise HTTPException(422, "检验方案不存在")
             item.scheme_name = scheme.name if scheme else ""
             item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
             item.fields = item.fields | {"sampling_items": "、".join(i["name"] for i in item.items)}
@@ -342,7 +344,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items} for s in session.scalars(query)]
 
     def save_scheme(body, session, scheme_id=None):
-        if not session.get(Material, body.material_id):
+        if body.material_id is not None and not session.get(Material, body.material_id):
             raise HTTPException(422, "物料不存在")
         item = session.get(Scheme, scheme_id) if scheme_id else Scheme()
         if not item:
@@ -392,13 +394,26 @@ def create_app(database_url: str | None = None) -> FastAPI:
             raise HTTPException(409, "所选记录尚未核对，确认后才能导出")
         return rows
 
+    @app.get('/api/templates/{kind}')
+    def default_template(kind: str, user: User = Depends(current_user)):
+        from app.exporting import template_dir
+        from app.personal_templates import FILENAMES
+        if kind not in FILENAMES:
+            raise HTTPException(404, '模板类型不存在')
+        path = template_dir() / FILENAMES[kind]
+        if not path.is_file():
+            raise HTTPException(503, '服务器默认模板尚未配置')
+        return FileResponse(path, filename=FILENAMES[kind], headers={'Cache-Control': 'no-store'})
+
     @app.post("/api/exports/xlsx")
     def export_excel(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
         from app.exporting import excel_bytes
+        from app.personal_templates import decode_template
         rows = export_records(body, session)
+        template = decode_template(body.template_base64, 'xlsx')
         names = {row.ledger_id: session.get(Ledger, row.ledger_id).name for row in rows}
         try:
-            content = excel_bytes(rows, names)
+            content = excel_bytes(rows, names, template)
         except FileNotFoundError:
             raise HTTPException(503, "模板文件夹缺少查验台账.xlsx")
         return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -406,15 +421,20 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.post("/api/exports/docx")
     def export_word(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
-        from app.exporting import word_archive, word_bytes
+        from app.exporting import report_filename, word_archive, word_bytes
+        from app.personal_templates import decode_template
         rows = export_records(body, session)
+        template = decode_template(body.template_base64, 'docx')
         try:
-            content = word_bytes(rows[0]) if len(rows) == 1 else word_archive(rows)
+            content = word_bytes(rows[0], template) if len(rows) == 1 else word_archive(rows, template)
+        except TemplateError:
+            raise HTTPException(422, 'Word模板占位符或语法不正确，请检查模板后重新导出') from None
         except (FileNotFoundError, OSError):
             raise HTTPException(503, "无法读取模板文件夹的检验报告.docx，请检查文件是否存在且已保存")
         suffix = "docx" if len(rows) == 1 else "zip"
         media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if suffix == "docx" else "application/zip"
-        return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="reports.{suffix}"'})
+        filename = report_filename(rows[0]) if len(rows) == 1 else '原辅料检验报告.zip'
+        return Response(content, media_type=media, headers={"Content-Disposition": f"attachment; filename=\"reports.{suffix}\"; filename*=UTF-8''{quote(filename)}"})
 
     def validate_images(image_ids, ledger_id, user, session):
         for image_id in image_ids:

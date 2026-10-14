@@ -2,6 +2,47 @@ from conftest import bootstrap
 from test_records import new_ledger
 
 
+def test_schemes_can_be_shared_without_material_and_selected_for_any_material(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    shared = client.post('/api/schemes', json={'name': '通用外观标准', 'items': [{'name': '外观', 'standard': '无异物'}]})
+    assert shared.status_code == 201
+    assert shared.json()['material_id'] is None
+    first = client.post('/api/materials', json={'name': '甘氨酸'}).json()
+    second = client.post('/api/materials', json={'name': '精氨酸'}).json()
+    linked = client.post('/api/schemes', json={'material_id': first['id'], 'name': '可复用标准', 'items': [{'name': '水分', 'standard': '≤0.2%'}]}).json()
+    for material in [None, first['id'], second['id']]:
+        record = client.post(f'/api/ledgers/{ledger}/records', json={'material_id': material, 'scheme_id': shared.json()['id']})
+        assert record.status_code == 201
+        assert record.json()['items'][0]['name'] == '外观'
+        changed = client.patch(f'/api/records/{record.json()["id"]}', json={'version': 1, 'scheme_id': linked['id']})
+        assert changed.status_code == 200
+        assert changed.json()['items'][0]['name'] == '水分'
+    assert client.put(f'/api/schemes/{linked["id"]}', json={'name': '取消绑定', 'items': []}).json()['material_id'] is None
+
+
+def test_changing_material_keeps_chosen_scheme_and_inspection_snapshot(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    first = client.post('/api/materials', json={'name': '甘氨酸'}).json()
+    second = client.post('/api/materials', json={'name': '精氨酸'}).json()
+    scheme = client.post('/api/schemes', json={'name': '通用', 'items': [{'name': '外观', 'standard': '无异物'}]}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'material_id': first['id'], 'scheme_id': scheme['id'], 'items': [{'name': '外观', 'standard': '无异物', 'result': '符合', 'conclusion': '合格'}]}).json()
+    changed = client.patch(f'/api/records/{record["id"]}', json={'version': 1, 'material_id': second['id']}).json()
+    assert changed['scheme_name'] == '通用'
+    assert changed['items'] == record['items']
+
+
+def test_explicit_no_scheme_does_not_label_individual_items_with_material_default(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    material = client.post('/api/materials', json={'name': '甘氨酸'}).json()
+    client.post('/api/schemes', json={'material_id': material['id'], 'name': '默认水分标准', 'items': [{'name': '水分'}]})
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'material_id': material['id'], 'scheme_id': None, 'items': [{'name': '外观', 'standard': '无异物'}]}).json()
+    assert record['scheme_name'] == ''
+    assert record['items'][0]['name'] == '外观'
+
+
 def test_material_schemes_autofill_only_when_unique_and_records_keep_snapshots(client):
     bootstrap(client)
     ledger = new_ledger(client)
