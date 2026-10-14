@@ -2,7 +2,7 @@
 import { onMounted, ref, shallowRef } from 'vue'
 import { chooseTemplateDirectory, selectedTemplateDirectory, supportsLocalTemplates, useServerTemplates } from './localTemplates'
 
-const props = defineProps<{ userId: number }>()
+const props = withDefaults(defineProps<{ userId: number; returnLabel?: string }>(), { returnLabel: '返回公司台账' })
 const emit = defineEmits<{ close: [] }>()
 const directory = shallowRef<FileSystemDirectoryHandle | null>(null)
 const busy = ref(true)
@@ -27,7 +27,7 @@ function reset() {
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>我的模板</h1><p class="muted">本账号在当前浏览器使用的个人模板</p></div><button :disabled="busy" @click="emit('close')">返回公司台账</button></div>
+    <div class="page-heading"><div><h1>我的模板</h1><p class="muted">本账号在当前浏览器使用的个人模板</p></div><button :disabled="busy" @click="emit('close')">{{ props.returnLabel }}</button></div>
     <section class="admin-card">
       <h2>本机模板目录</h2>
       <p>在自己的电脑上选择一个项目目录之外的专用文件夹。首次选择时会补齐缺少的模板，已有文件会保留。</p>

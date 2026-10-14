@@ -42,6 +42,7 @@ class Record(Base):
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     fields: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="pending")
+    inspection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

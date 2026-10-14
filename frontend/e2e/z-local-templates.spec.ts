@@ -25,7 +25,10 @@ async function login(page: Page, username = 'admin') {
 async function exportFromPanel(page: Page, kind: 'xlsx' | 'docx', expected: string | null) {
   await page.getByRole('button', { name: '返回公司台账', exact: true }).click()
   await page.getByRole('button', { name: '进入青山科技' }).click()
-  await page.locator('input[aria-label^="选择记录"]:enabled').first().check()
+  await page.getByRole('button', { name: '清空选择', exact: true }).click()
+  const rows = page.getByRole('row').filter({ has: page.locator('input[aria-label^="选择记录"]:enabled') })
+  const eligible = kind === 'docx' ? rows.filter({ has: page.getByText('检验', { exact: true }) }) : rows
+  await eligible.first().getByRole('checkbox').check()
   const exportRequest = page.waitForRequest(request => request.url().endsWith(`/api/exports/${kind}`))
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: kind === 'xlsx' ? '导出 Excel' : '导出 Word', exact: true }).click()
@@ -33,6 +36,18 @@ async function exportFromPanel(page: Page, kind: 'xlsx' | 'docx', expected: stri
   expect(await (await download).failure()).toBeNull()
   await page.getByRole('button', { name: '我的模板', exact: true }).click()
 }
+
+test.beforeAll(async ({ request }) => {
+  await request.post('/api/login', { data: { username: 'admin', password: 'browser-test-password' } })
+  const ledgers = await (await request.get('/api/ledgers')).json()
+  const ledger = ledgers.find((entry: { name: string }) => entry.name === '青山科技')
+  const response = await request.post(`/api/ledgers/${ledger.id}/records`, {
+    data: { inspection_enabled: true, fields: { material_name: '模板导出检验样本' } },
+  })
+  expect(response.status()).toBe(201)
+  const record = await response.json()
+  expect((await request.post(`/api/records/${record.id}/check`, { data: { version: record.version } })).status()).toBe(200)
+})
 
 test.beforeEach(async ({ page }) => { page.on('dialog', dialog => dialog.accept()) })
 

@@ -33,7 +33,7 @@ def user_view(user):
 
 
 def record_view(item):
-    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "version",
+    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "inspection_enabled", "version",
                                                "created_at", "updated_at", "checker_id", "checked_at", "material_id", "scheme_name", "items", "report", "image_ids", "recognition_job_id")}
 
 
@@ -89,6 +89,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if user.role != "admin":
             raise HTTPException(403, "此操作需要管理员权限")
         return user
+
+    from app.maintenance import register_maintenance_routes
+    register_maintenance_routes(app, db, administrator)
 
     @app.exception_handler(IntegrityError)
     async def duplicate(request, exc):
@@ -228,7 +231,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
         if body.scheme_id and not scheme:
             raise HTTPException(422, "检验方案不存在")
-        if "scheme_id" not in body.model_fields_set and material:
+        if body.inspection_enabled and "scheme_id" not in body.model_fields_set and material:
             choices = list(session.scalars(select(Scheme).where(Scheme.material_id == material.id)))
             if len(choices) == 1:
                 scheme = choices[0]
@@ -239,6 +242,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if "sampling_items" not in body.fields.model_fields_set:
             fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
         item = Record(ledger_id=ledger_id, creator_id=user.id, fields=fields, material_id=body.material_id,
+                      inspection_enabled=body.inspection_enabled,
                       scheme_name=scheme.name if scheme else "", items=items, report=body.report.model_dump(mode="json"), image_ids=list(dict.fromkeys(body.image_ids)), recognition_job_id=body.recognition_job_id)
         session.add(item)
         append_history(item, user, "created", session)
@@ -260,6 +264,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.patch("/api/records/{record_id}")
     def edit_record(record_id: int, body: RecordChange, user: User = Depends(current_user), session: Session = Depends(db)):
         item = editable_record(record_id, body.version, user, session)
+        enabled = body.inspection_enabled if body.inspection_enabled is not None else item.inspection_enabled
+        # A full editor draft can contain work entered while inspection was on,
+        # then switched off before saving. Keep it dormant, never exportable.
+        if not item.inspection_enabled and not enabled and body.inspection_enabled is None:
+            changed_items = body.items is not None and [i.model_dump() for i in body.items] != item.items
+            changed_report = body.report is not None and item.report | body.report.model_dump(mode="json", exclude_unset=True) != item.report
+            if changed_items or changed_report or 'scheme_id' in body.model_fields_set:
+                raise HTTPException(409, '未检验记录的检验项目和报告信息已锁定，请先选择检验')
+        item.inspection_enabled = enabled
         if "material_id" in body.model_fields_set:
             if body.material_id and not session.get(Material, body.material_id):
                 raise HTTPException(422, "物料不存在")
@@ -424,6 +437,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         from app.exporting import report_filename, word_archive, word_bytes
         from app.personal_templates import decode_template
         rows = export_records(body, session)
+        if any(not row.inspection_enabled for row in rows):
+            raise HTTPException(409, '所选记录中有未检验记录，请取消勾选未检验记录后导出 Word')
         template = decode_template(body.template_base64, 'docx')
         try:
             content = word_bytes(rows[0], template) if len(rows) == 1 else word_archive(rows, template)

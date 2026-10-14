@@ -64,7 +64,7 @@ class InspectionItem(Input):
 class ReportFields(Input):
     packaging: str = ""
     basis: str = ""
-    inspection_date: date | None = None
+    inspection_date: date | None = Field(default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai")).date())
     internal_report: str = ""
     conclusion: str = ""
     inspector: str = ""
@@ -72,6 +72,7 @@ class ReportFields(Input):
 
 
 class RecordCreate(Input):
+    inspection_enabled: bool = False
     recognition_job_id: int | None = None
     fields: RecordFields = Field(default_factory=RecordFields)
     material_id: int | None = None
@@ -86,6 +87,7 @@ class VersionInput(Input):
 
 
 class RecordChange(VersionInput):
+    inspection_enabled: bool | None = None
     recognition_job_id: int | None = None
     fields: RecordFields | None = None
     items: list[InspectionItem] | None = None

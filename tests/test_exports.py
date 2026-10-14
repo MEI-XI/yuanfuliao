@@ -15,7 +15,7 @@ from test_records import new_ledger
 def test_word_long_product_name_fits_windows_filename_limit(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    body = {'fields': {'material_name': '原料' * 140}, 'report': {'inspection_date': '2026-10-14'}}
+    body = {'inspection_enabled': True, 'fields': {'material_name': '原料' * 140}, 'report': {'inspection_date': '2026-10-14'}}
     first = client.post(f'/api/ledgers/{ledger}/records', json=body).json()
     second = client.post(f'/api/ledgers/{ledger}/records', json=body).json()
     response = client.post('/api/exports/docx', json={'record_ids': [first['id'], second['id']], 'include_pending': True})
@@ -53,7 +53,7 @@ def test_excel_preserves_13_columns_company_sheets_blanks_and_manufacturer_sourc
 def test_word_uses_dotted_production_date_one_report_per_record_and_current_template_signatures(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    saved = client.post(f"/api/ledgers/{ledger}/records", json={"fields": {
+    saved = client.post(f"/api/ledgers/{ledger}/records", json={"inspection_enabled": True, "fields": {
         "material_name": "甘氨酸", "production_dates": ["2026-01-14"]},
         "items": [{"name": "水分", "standard": "≤0.2%", "result": "0.1%", "conclusion": "符合"}]
     }).json()
@@ -69,7 +69,7 @@ def test_word_uses_dotted_production_date_one_report_per_record_and_current_temp
         pictures = [name for name in template_zip.namelist() if name.startswith("word/media/")]
         assert pictures
         assert {name: template_zip.read(name) for name in pictures} == {name: output_zip.read(name) for name in pictures}
-    second = client.post(f"/api/ledgers/{ledger}/records", json={}).json()
+    second = client.post(f"/api/ledgers/{ledger}/records", json={"inspection_enabled": True}).json()
     batch = client.post("/api/exports/docx", json={"record_ids": [saved["id"], second["id"]], "include_pending": True})
     with ZipFile(BytesIO(batch.content)) as archive:
         assert len(archive.namelist()) == 2
@@ -84,12 +84,15 @@ def test_company_named_like_template_exports_exact_sheet_name(client):
     assert load_workbook(BytesIO(response.content)).sheetnames == ['Sheet']
 
 
-def test_word_preserves_inspection_unit_in_existing_project_column(client):
+def test_word_omits_legacy_inspection_unit_from_project_name_and_report(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    record = client.post(f'/api/ledgers/{ledger}/records', json={'items': [{'name': '水分', 'standard': '≤0.2', 'unit': 'mg/kg', 'result': '0.1'}]}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True, 'items': [{'name': '水分', 'standard': '≤0.2', 'unit': 'mg/kg', 'result': '0.1'}]}).json()
     response = client.post('/api/exports/docx', json={'record_ids': [record['id']], 'include_pending': True})
-    assert '水分（mg/kg）' in Document(BytesIO(response.content)).element.xml
+    assert response.status_code == 200
+    content = Document(BytesIO(response.content)).element.xml
+    assert '水分 ≤0.2 0.1' in content
+    assert 'mg/kg' not in content
 
 
 @pytest.mark.parametrize('template_title', ['原辅料查验记录', '原辅料查验记录X年', '原辅料查验记录2024年'])
@@ -128,8 +131,9 @@ def test_word_zip_uses_inspection_date_and_shanghai_creation_date_with_unique_sa
     products = ['甘氨酸', '甘氨酸', '甘氨酸', 'Product', 'product', '盐/糖:*?"<>|\\', '']
     for index, product in enumerate(products):
         response = client.post(f'/api/ledgers/{ledger}/records', json={
+            'inspection_enabled': True,
             'fields': {'material_name': product, 'arrival_date': '2023-01-01'},
-            'report': {'inspection_date': '2026-10-14'} if index < 6 else {},
+            'report': {'inspection_date': '2026-10-14' if index < 6 else None},
             'items': [{'name': f'检验项{index}', 'result': f'结果{index}'}]
         })
         assert response.status_code == 201
@@ -185,7 +189,7 @@ def test_word_archive_renders_supplied_template_fresh_for_each_record(monkeypatc
     document.add_picture(str(Path(__file__).parent / 'fixtures/label.png'))
     template = BytesIO()
     document.save(template)
-    records = [Record(fields={'material_name': name}, report={'inspection_date': '2026-10-14'}, items=[])
+    records = [Record(inspection_enabled=True, fields={'material_name': name}, report={'inspection_date': '2026-10-14'}, items=[])
                for name in ['甲品', '乙品']]
 
     with ZipFile(BytesIO(word_archive(records, template.getvalue()))) as archive:
@@ -206,6 +210,6 @@ def test_supplied_word_template_cannot_access_python_internals():
     document.add_paragraph("{{ ''.__class__.__mro__[1].__subclasses__() }}")
     template = BytesIO()
     document.save(template)
-    record = Record(fields={}, report={}, items=[])
+    record = Record(inspection_enabled=True, fields={}, report={}, items=[])
     with pytest.raises(SecurityError):
         word_bytes(record, template.getvalue())

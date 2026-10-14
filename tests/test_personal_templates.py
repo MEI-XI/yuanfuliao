@@ -13,7 +13,7 @@ from test_records import new_ledger
 def test_personal_word_template_applies_once_without_changing_server_default(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    record = client.post(f'/api/ledgers/{ledger}/records', json={'fields': {'material_name': '甘氨酸'}, 'report': {'inspection_date': '2026-10-14'}}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True, 'fields': {'material_name': '甘氨酸'}, 'report': {'inspection_date': '2026-10-14'}}).json()
     original = client.get('/api/templates/docx')
     assert original.status_code == 200
     document = Document(BytesIO(original.content))
@@ -53,7 +53,7 @@ def test_personal_excel_template_is_used_without_persisting_and_rejects_wrong_fi
 def test_broken_or_unsafe_word_template_returns_actionable_error(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    record = client.post(f'/api/ledgers/{ledger}/records', json={}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True}).json()
     body = {'record_ids': [record['id']], 'include_pending': True}
     broken = BytesIO()
     with ZipFile(broken, 'w') as archive:
@@ -72,7 +72,7 @@ def test_broken_or_unsafe_word_template_returns_actionable_error(client):
 def test_word_package_with_invalid_document_structure_is_rejected(client):
     bootstrap(client)
     ledger = new_ledger(client)
-    record = client.post(f'/api/ledgers/{ledger}/records', json={}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True}).json()
     original = client.get('/api/templates/docx').content
     output = BytesIO()
     with ZipFile(BytesIO(original)) as source, ZipFile(output, 'w') as target:

@@ -84,7 +84,7 @@ def test_changing_a_saved_scheme_replaces_snapshot_instead_of_reusing_results(cl
     material = client.post('/api/materials', json={'name': '甘氨酸'}).json()['id']
     first = client.post('/api/schemes', json={'material_id': material, 'name': '原标准', 'items': [{'name': '水分', 'standard': '≤0.2%'}]}).json()
     second = client.post('/api/schemes', json={'material_id': material, 'name': '新标准', 'items': [{'name': '含量', 'standard': '≥98.5%'}]}).json()
-    record = client.post(f'/api/ledgers/{ledger}/records', json={'material_id': material, 'scheme_id': first['id'], 'items': [{'name': '水分', 'standard': '≤0.2%', 'result': '0.1%', 'conclusion': '符合'}]}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True, 'material_id': material, 'scheme_id': first['id'], 'items': [{'name': '水分', 'standard': '≤0.2%', 'result': '0.1%', 'conclusion': '符合'}]}).json()
     changed = client.patch(f'/api/records/{record["id"]}', json={'version': 1, 'material_id': material, 'scheme_id': second['id']})
     assert changed.status_code == 200
     assert changed.json()['scheme_name'] == '新标准'

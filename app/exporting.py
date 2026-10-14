@@ -87,7 +87,8 @@ def word_bytes(record, template=None):
     context = fields | report | {
         "production_dates": dates_text(fields.get("production_dates", [])),
         "inspection_date": dates_text([report["inspection_date"]]) if report.get("inspection_date") else "",
-        "batch_blank": "", "items": [item | {'name': item.get('name', '') + (f"（{item['unit']}）" if item.get('unit') else '')} for item in record.items],
+        "batch_blank": "", "items": [item | {'unit': ''} for item in record.items],
+        "inspector": "", "approver": "",
         "report_reference": "其他检验项目依据该公司提供的内检报告为准" if report.get("internal_report") == "是" else "",
     }
     template.render({key: "" if value is None else value for key, value in context.items()},

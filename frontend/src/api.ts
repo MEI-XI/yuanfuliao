@@ -14,6 +14,7 @@ export const fieldsSchema = z.object({
 export const reportSchema = z.object({ packaging: z.string().default(''), basis: z.string().default(''), inspection_date: z.string().nullable().default(null), internal_report: z.string().default(''), conclusion: z.string().default(''), inspector: z.string().default(''), approver: z.string().default('') })
 export const recordSchema = z.object({
   id: z.number(), ledger_id: z.number(), creator_id: z.number(), version: z.number(),
+  inspection_enabled: z.boolean().default(true),
   status: z.enum(['pending', 'checked', 'void']), fields: fieldsSchema, items: z.array(itemSchema), report: reportSchema,
   image_ids: z.array(z.number()), material_id: z.number().nullable(), scheme_name: z.string(),
   recognition_job_id: z.number().nullable().default(null),

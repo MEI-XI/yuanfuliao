@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { api, raw, json, today, userSchema, ledgerSchema, recordSchema, fieldsSchema, reportSchema, jobSchema, type User, type Ledger, type CheckRecord, type Fields, type Item, type Job } from './api'
 import './style.css'
 import AdminPanel from './AdminPanel.vue'
+import BatchGroups from './BatchGroups.vue'
 import LocalTemplatesPanel from './LocalTemplatesPanel.vue'
 import { readExportTemplate } from './localTemplates'
 import { materialSchema, schemeSchema, partnerSchema } from './api'
@@ -23,6 +24,12 @@ const historyOpen = ref(false)
 const histories = ref<{ actor_id: number; action: string; at: string; snapshot: CheckRecord }[]>([])
 const actionNames: Record<string, string> = { created: '创建记录', checked: '核对记录', edited: '修改记录', voided: '作废记录' }
 const view = ref<'home' | 'ledger' | 'editor' | 'admin' | 'templates'>('home')
+const returnToEditor = ref(false)
+function openTemplates() {
+  if (view.value === 'templates') return
+  returnToEditor.value = view.value === 'editor'; view.value = 'templates'
+}
+function closeTemplates() { view.value = returnToEditor.value ? 'editor' : 'home'; if (!returnToEditor.value) ledger.value = null }
 const createLedger = ref(false)
 const ledgerName = ref('')
 const records = ref<CheckRecord[]>([])
@@ -32,7 +39,7 @@ const editing = ref<CheckRecord | null>(null)
 const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
 const items = ref<Item[]>([])
-type DraftGroup = { key: number; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
+type DraftGroup = { key: number; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
 let nextGroupKey = 0
 const groups = ref<DraftGroup[]>([])
 const activeGroup = ref(0)
@@ -46,7 +53,7 @@ const showPhoto = ref(true)
 const suggestedFields = computed(() => Object.entries(group.value?.job?.cloud_fields || {}))
 const localSuggestions = computed(() => Object.entries(group.value?.job?.fields || {}))
 const fieldNames: Record<string, string> = { arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', address_source: '地址来源', contact_source: '联系方式来源' }
-function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({}), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
+function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
 const recognizing = computed(() => groups.value.some(g => g.requestState === 'submitting' || g.requestState === 'polling'))
 const interrupted = computed(() => groups.value.some(g => g.requestState === 'error'))
 const recognitionLabel = computed(() => {
@@ -100,7 +107,7 @@ function chooseMaterial(event: Event) {
   const material = catalog.value.find(m => m.id === group.value?.materialId)
   if (material) { fields.value.material_name = [material.name, material.model].filter(Boolean).join(' '); markDirty('material_name') }
   const choices = standards.value.filter(s => s.material_id === group.value?.materialId)
-  if (!items.value.length && !group.value.schemeId && choices.length === 1) replaceScheme(choices[0]?.id || null)
+  if (group.value.inspectionEnabled && !items.value.length && !group.value.schemeId && choices.length === 1) replaceScheme(choices[0]?.id || null)
 }
 function chooseScheme(event: Event) {
   if (!(event.target instanceof HTMLSelectElement) || !group.value) return
@@ -121,6 +128,14 @@ function switchGroup(index: number) {
   selectedImage.value = current.images[0] || 0; angle.value = 0
 }
 function markDirty(key: string) { group.value?.dirty.add(key) }
+function reorderGroups(from: number, to: number) {
+  if (busy.value) return
+  const current = group.value
+  const moved = groups.value.splice(from, 1)[0]
+  if (!moved) return
+  groups.value.splice(to, 0, moved)
+  activeGroup.value = Math.max(0, groups.value.findIndex(entry => entry === current))
+}
 function applyReviewSuggestion(key: string, value: unknown) {
   applySuggestion(key, value)
   if (key === 'address' || key === 'contact') {
@@ -217,9 +232,9 @@ async function openEditor(record: CheckRecord | null = null) {
   }
   editing.value = record
   fields.value = fieldsSchema.parse(record?.fields || { arrival_date: today() })
-  report.value = reportSchema.parse(record?.report || {})
+  report.value = reportSchema.parse(record?.report || { inspection_date: today() })
   items.value = record ? record.items.map(i => ({ ...i })) : []
-  groups.value = [{ ...makeGroup(record?.image_ids || []), fields: fields.value, report: report.value, items: items.value, jobId: record?.recognition_job_id || null, materialId: record?.material_id || null }]
+  groups.value = [{ ...makeGroup(record?.image_ids || []), inspectionEnabled: record?.inspection_enabled ?? false, fields: fields.value, report: report.value, items: items.value, jobId: record?.recognition_job_id || null, materialId: record?.material_id || null }]
   switchGroup(0)
   const current = group.value
   if (record?.recognition_job_id && current) {
@@ -238,7 +253,7 @@ async function save(check: boolean) {
   await perform(async () => {
     if (!ledger.value) return
     const savedGroup = group.value
-    const body = { fields: { ...fields.value, arrival_date: fields.value.arrival_date || null }, report: { ...report.value, inspection_date: report.value.inspection_date || null }, items: items.value, image_ids: group.value?.images || [], recognition_job_id: group.value?.jobId || null }
+    const body = { inspection_enabled: group.value?.inspectionEnabled ?? false, fields: { ...fields.value, arrival_date: fields.value.arrival_date || null }, report: { ...report.value, inspection_date: report.value.inspection_date || null }, items: items.value, image_ids: group.value?.images || [], recognition_job_id: group.value?.jobId || null }
     const record = editing.value
       ? await api(`/records/${editing.value.id}`, recordSchema, json('PATCH', { ...body, version: editing.value.version, ...(group.value?.materialChanged ? { material_id: group.value.materialId } : {}), ...(group.value?.schemeChanged ? { scheme_id: group.value.schemeId } : {}) }))
       : await api(`/ledgers/${ledger.value.id}/records`, recordSchema, json('POST', { ...body, material_id: group.value?.materialId, scheme_id: group.value?.schemeId }))
@@ -370,6 +385,7 @@ async function download(kind: 'xlsx' | 'docx') {
   await perform(async () => {
     const selected = selectedVisible.value
     if (!selected.length) throw new Error('请先选择要导出的记录')
+    if (kind === 'docx' && selected.some(record => !record.inspection_enabled)) throw new Error('所选记录中有未检验记录，请取消勾选未检验记录后导出 Word')
     const pending = selected.some(r => r.status === 'pending')
     if (pending && !window.confirm('所选记录包含待核对内容，仍要导出吗？')) return
     const template = user.value ? await readExportTemplate(user.value.id, kind) : null
@@ -397,10 +413,10 @@ async function download(kind: 'xlsx' | 'docx') {
     </form>
   </main>
   <div v-else class="workspace">
-    <header class="topbar"><button class="brand-button" @click="view = 'home'; ledger = null"><span class="brand-mark small-mark">验</span>原辅料查验</button><div class="company-context">{{ ledger?.name || '公司台账' }}</div><div class="account"><button class="quiet" @click="view = 'templates'">我的模板</button><button v-if="user.role === 'admin'" class="quiet admin-entry" @click="view = 'admin'">管理与公共资料</button><span>{{ user.username }} <small>{{ user.role === 'admin' ? '管理员' : '普通用户' }}</small></span><button class="quiet" @click="logout">退出</button></div></header>
+    <header class="topbar"><button class="brand-button" @click="view = 'home'; ledger = null"><span class="brand-mark small-mark">验</span>原辅料查验</button><div class="company-context">{{ ledger?.name || '公司台账' }}</div><div class="account"><button class="quiet" @click="openTemplates">我的模板</button><button v-if="user.role === 'admin'" class="quiet admin-entry" @click="view = 'admin'">管理与公共资料</button><span>{{ user.username }} <small>{{ user.role === 'admin' ? '管理员' : '普通用户' }}</small></span><button class="quiet" @click="logout">退出</button></div></header>
     <div v-if="error" class="global-message error" role="alert">{{ error }}<button class="quiet" @click="error = ''">关闭</button></div>
     <div v-if="notice" class="global-message success" role="status">{{ notice }}</div>
-    <LocalTemplatesPanel v-if="view === 'templates'" :user-id="user.id" @close="view = 'home'; ledger = null" /><AdminPanel v-else-if="view === 'admin' && user.role === 'admin'" @close="view = 'home'; ledger = null; loadLedgers()" /><main v-else-if="view === 'home'" class="page home-page">
+    <LocalTemplatesPanel v-if="view === 'templates'" :user-id="user.id" :return-label="returnToEditor ? '返回录入界面' : '返回公司台账'" @close="closeTemplates" /><AdminPanel v-else-if="view === 'admin' && user.role === 'admin'" @close="view = 'home'; ledger = null; loadLedgers()" /><main v-else-if="view === 'home'" class="page home-page">
       <div class="page-heading"><div><h1>选择公司台账</h1><p class="muted">先进入台账，再上传图片或录入查验记录。</p></div><div class="button-row"><button @click="showAllRecords">查看全部记录</button><button v-if="user.role === 'admin'" class="primary" @click="createLedger = true">新建公司台账</button></div></div>
       <div v-if="!ledgers.length" class="empty">{{ user.role === 'admin' ? '还没有公司台账，请先建立。' : '还没有公司台账，请联系管理员建立。' }}</div>
       <div class="ledger-grid"><button v-for="entry in ledgers" :key="entry.id" class="ledger-entry" :aria-label="`进入${entry.name}`" @click="enterLedger(entry)"><span class="ledger-symbol">{{ Array.from(entry.name.trim())[0] }}</span><strong>{{ entry.name }}</strong><span class="muted">查验记录与检验报告</span><span class="enter-label">进入台账</span></button></div>
@@ -411,7 +427,7 @@ async function download(kind: 'xlsx' | 'docx') {
       <section class="table-panel">
         <div class="filters"><label class="search-label">查找记录<input v-model="filter.text" type="search" placeholder="物料名称、供应商或生产商"></label><label>状态<select v-model="filter.status"><option value="">全部状态</option><option value="pending">待核对</option><option value="checked">已核对</option><option value="void">作废</option></select></label><label>到货日期从<input v-model="filter.from" type="date"></label><label>到<input v-model="filter.to" type="date"></label><label>创建人<select v-model="filter.creator"><option :value="0">所有人员</option><option v-for="person in people" :key="person.id" :value="person.id">{{ person.username }}</option></select></label><label class="checkbox-label"><input v-model="filter.mine" type="checkbox">我创建的</label></div>
         <p class="muted">先勾选需要导出的记录。Excel 按公司分表；多条 Word 每条一份报告，打包为 ZIP 下载。</p><div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedVisible.length }} 条</span><div><button @click="selectedIds = filteredRecords.filter(r => r.status !== 'void').map(r => r.id)">全选当前记录</button><button @click="selectedIds = []">清空选择</button><button :disabled="busy || !selectedVisible.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedVisible.length" @click="download('docx')">导出 Word</button></div></div>
-        <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies">公司台账</th><th>到货日期</th><th>物料名称、型号</th><th>生产日期</th><th>供应商或生产商</th><th>接收数量</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="record in filteredRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (user.role === 'admin' || user.id === record.creator_id) ? '核对 / 编辑' : '查看' }}</button></td></tr></tbody></table></div>
+        <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies">公司台账</th><th>到货日期</th><th>物料名称、型号</th><th>生产日期</th><th>供应商或生产商</th><th>接收数量</th><th>检验状态</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="record in filteredRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="inspection-status" :class="{ enabled: record.inspection_enabled }">{{ record.inspection_enabled ? '检验' : '未检验' }}</span></td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (user.role === 'admin' || user.id === record.creator_id) ? '核对 / 编辑' : '查看' }}</button></td></tr></tbody></table></div>
         <div v-if="!filteredRecords.length" class="empty">暂无记录。点击“上传与录入”开始。</div>
       </section>
     </main>
@@ -429,7 +445,7 @@ async function download(kind: 'xlsx' | 'docx') {
           </div>
         </section>
       </section>
-      <div v-if="groups.length > 1" class="group-strip"><div v-for="(entry, index) in groups" :key="entry.key" class="group-tab"><button :class="{ active: index === activeGroup }" @click="switchGroup(index)">记录 {{ index + 1 }} · {{ entry.images.length }} 张</button><button v-if="index > 0" class="text-button" @click="mergePrevious(index)">合并到上一组</button></div></div>
+      <BatchGroups v-if="groups.length > 1" :groups="groups" :active-index="activeGroup" @select="switchGroup" @merge="mergePrevious" @reorder="reorderGroups" />
       <p v-for="suggestion in groupingSuggestions" :key="suggestion" class="notice">{{ suggestion }}</p><div class="editor-grid"><aside class="image-panel"><div class="panel-heading"><h2>包装图片</h2><button class="text-button" @click="showPhoto = !showPhoto">{{ showPhoto ? '折叠图片' : '展开图片' }}</button></div><p aria-label="当前图片分组" class="muted">记录 {{ activeGroup + 1 }} · {{ group?.images.length || 0 }} 张</p>
         <div v-if="editable" class="upload-drop" @dragover.prevent @drop.prevent="uploadFiles($event.dataTransfer?.files || null)"><label class="file-picker">选择照片 / 相册<input type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="选择包装照片" :disabled="busy" @change="fileChosen"></label><label class="file-picker camera-picker">拍照<input type="file" accept="image/*" capture="environment" aria-label="拍摄包装照片" :disabled="busy" @change="fileChosen"></label><small>支持拖入照片，每张最多 20MB</small></div>
         <template v-if="showPhoto"><div v-if="selectedImage" class="photo-viewer"><img :src="`/api/images/${selectedImage}`" alt="当前包装原图" :style="{ transform: `rotate(${angle}deg)` }" @click="showLarge = true"></div><div v-else class="image-placeholder"><div class="picture-icon">▧</div><p>本条记录暂无图片</p><small>可以先手动填写并保存</small></div><div v-if="selectedImage" class="photo-actions"><button @click="angle += 90">旋转查看</button><button @click="showLarge = true">放大原图</button></div><div class="thumbnails"><div v-for="photo in group?.images || []" :key="photo" class="thumbnail"><button :class="{ active: selectedImage === photo }" @click="selectedImage = photo; angle = 0"><img :src="`/api/images/${photo}`" alt="包装图片缩略图"></button><template v-if="editable"><button class="text-button" @click="removeImage(photo)">移除</button><button v-if="!editing && (group?.images.length || 0) > 1" class="text-button" @click="splitImage(photo)">拆成一组</button><select v-if="!editing && groups.length > 1" aria-label="移动图片到分组" :value="group?.key" @change="imageDestination($event, photo)"><option v-for="(entry, index) in groups" :key="entry.key" :value="entry.key">记录 {{ index + 1 }}</option></select></template></div></div></template>
@@ -449,8 +465,9 @@ async function download(kind: 'xlsx' | 'docx') {
         <div class="form-panel"><fieldset :disabled="!editable || busy" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><label v-for="field in textFields" :key="field.key">{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)"></label><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div></section>
           <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
           <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates"></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写"></textarea></label><label class="wide">抽检项目<input v-model="fields.sampling_items"></label><label class="wide">备注<textarea v-model="fields.notes" rows="2"></textarea></label></div></section>
-          <section class="form-section"><h2>检验项目</h2><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>单位<input v-model="item.unit"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
-          <section class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging"></label><label>检验依据<input v-model="report.basis"></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label><label>检验员<input v-model="report.inspector"></label><label>批准<input v-model="report.approver"></label></div><p class="muted">报告会使用模板文件夹中的签名图片。</p></section>
+          <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging"></label><label>检验依据<input v-model="report.basis"></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
         </fieldset></div></div>
       <footer class="savebar"><span>{{ editable ? '业务字段允许留空' : '当前记录只读' }}</span><div><button @click="view = 'ledger'">返回台账</button><button v-if="editable" :disabled="busy" @click="save(false)">保存记录</button><button v-if="editable" class="primary" :disabled="busy" @click="save(true)">保存并标记已核对</button></div></footer>
     </main>
