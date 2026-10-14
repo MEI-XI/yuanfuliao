@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.env.*
+tmp
+data
+models
+templates/*.docx
+templates/*.xlsx
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report

@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: yuanfuliao
+      POSTGRES_DB: yuanfuliao
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请设置数据库密码}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuanfuliao -d yuanfuliao"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://yuanfuliao:${POSTGRES_PASSWORD}@db:5432/yuanfuliao
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+      - ./templates:/app/templates:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres:
