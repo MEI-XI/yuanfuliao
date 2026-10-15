@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
 import { ApiError, api, raw, json, today, userSchema, ledgerSchema, recordSchema, fieldsSchema, reportSchema, jobSchema, type User, type Ledger, type CheckRecord, type Fields, type Item, type Job } from './api'
 import './style.css'
@@ -7,8 +7,10 @@ import AdminPanel from './AdminPanel.vue'
 import BatchGroups from './BatchGroups.vue'
 import RecycleBin from './RecycleBin.vue'
 import LocalTemplatesPanel from './LocalTemplatesPanel.vue'
+import ReportAttachments from './ReportAttachments.vue'
+import ReportPreview from './ReportPreview.vue'
 import { readExportTemplate } from './localTemplates'
-import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema } from './api'
+import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice } from './api'
 
 const user = ref<User | null>(null)
 const administrator = computed(() => user.value?.role === 'admin' || user.value?.role === 'superadmin')
@@ -24,7 +26,7 @@ const allCompanies = ref(false)
 const people = ref<{ id: number; username: string }[]>([])
 const historyOpen = ref(false)
 const histories = ref<{ actor_id: number; action: string; at: string; snapshot: CheckRecord }[]>([])
-const actionNames: Record<string, string> = { created: '创建记录', checked: '核对记录', edited: '修改记录', voided: '作废记录', restored: '还原记录' }
+const actionNames: Record<string, string> = { created: '创建记录', checked: '核对记录', edited: '修改记录', voided: '作废记录', restored: '还原记录', report_uploaded: '上传检验报告', report_deleted: '删除检验报告' }
 const view = ref<'home' | 'ledger' | 'editor' | 'admin' | 'templates' | 'recycle'>('home')
 const returnToEditor = ref(false)
 const editorReturn = ref<'ledger' | 'recycle'>('ledger')
@@ -43,12 +45,19 @@ const createLedger = ref(false)
 const ledgerName = ref('')
 const records = ref<CheckRecord[]>([])
 const selectedIds = ref<number[]>([])
+const previewIds = ref<number[]>([])
+function openPreview(recordIds: number[]) { if (recordIds.length) previewIds.value = recordIds }
 const filter = reactive({ text: '', status: '', from: '', to: '', mine: false, creator: 0 })
 const editing = ref<CheckRecord | null>(null)
+function updateAttachmentRecord(metadata: Pick<CheckRecord, 'status' | 'checker_id' | 'checked_at' | 'updated_at'> & { record_version: number }) {
+  if (!editing.value) return
+  Object.assign(editing.value, { version: metadata.record_version, status: metadata.status, checker_id: metadata.checker_id, checked_at: metadata.checked_at, updated_at: metadata.updated_at })
+}
 const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
 const items = ref<Item[]>([])
-type DraftGroup = { key: number; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
+type ExpiryDerivation = { inputKey: string | null; generation: number; changed: boolean; autoShelfLife: string | null; autoExpiryDate: string | null; warnings: string[] }
+type DraftGroup = { key: number; expiry: ExpiryDerivation; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
 let nextGroupKey = 0
 const groups = ref<DraftGroup[]>([])
 const activeGroup = ref(0)
@@ -71,8 +80,8 @@ const showLarge = ref(false)
 const showPhoto = ref(true)
 const suggestedFields = computed(() => Object.entries(group.value?.job?.cloud_fields || {}))
 const localSuggestions = computed(() => Object.entries(group.value?.job?.fields || {}))
-const fieldNames: Record<string, string> = { arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', address_source: '地址来源', contact_source: '联系方式来源' }
-function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
+const fieldNames: Record<string, string> = { arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', expiry_date: '保质期至', address_source: '地址来源', contact_source: '联系方式来源' }
+function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, expiry: { inputKey: null, generation: 0, changed: false, autoShelfLife: null, autoExpiryDate: null, warnings: [] }, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
 const recognizing = computed(() => groups.value.some(g => g.requestState === 'submitting' || g.requestState === 'polling'))
 const interrupted = computed(() => groups.value.some(g => g.requestState === 'error'))
 const recognitionLabel = computed(() => {
@@ -97,8 +106,18 @@ const materialSaveError = ref('')
 function reviewMaterial() {
   const selected = catalog.value.find(entry => entry.id === group.value?.materialId)
   const matchesSelected = selected && fields.value.material_name === [selected.name, selected.model].filter(Boolean).join(' ')
-  Object.assign(materialDraft, { name: matchesSelected ? selected.name : fields.value.material_name, model: matchesSelected ? selected.model : '', aliases: selected?.aliases || '', ...materialDetailsSchema.parse(fields.value) })
+  Object.assign(materialDraft, { name: matchesSelected ? selected.name : fields.value.material_name, model: matchesSelected ? selected.model : '', aliases: selected?.aliases || '', ...materialDetailsSchema.parse({ ...fields.value, packaging: report.value.packaging }) })
   materialSaveError.value = ''; saveMaterialOpen.value = true
+}
+async function normalizeMaterialDraftShelfLife() {
+  const value = materialDraft.shelf_life
+  if (!value) return
+  try {
+    const normalized = await normalizeShelfLife(value)
+    if (saveMaterialOpen.value && materialDraft.shelf_life === value) materialDraft.shelf_life = normalized
+  } catch (problem) {
+    if (saveMaterialOpen.value && materialDraft.shelf_life === value) materialSaveError.value = problem instanceof Error ? problem.message : '保质期格式转换失败'
+  }
 }
 async function saveMaterialInfo() {
   if (!administrator.value || busy.value) return
@@ -109,6 +128,24 @@ async function saveMaterialInfo() {
     saveMaterialOpen.value = false
     notice.value = '已新增共享物料；本次查验记录仍需保存'
   } catch (problem) { materialSaveError.value = problem instanceof Error ? problem.message : '物料保存失败' }
+  finally { busy.value = false }
+}
+const saveSchemeOpen = ref(false)
+const schemeDraft = reactive<{ name: string; material_id: number | null; items: Pick<Item, 'name' | 'standard'>[] }>({ name: '', material_id: null, items: [] })
+const schemeSaveError = ref('')
+function reviewScheme() {
+  Object.assign(schemeDraft, { name: '', material_id: group.value?.materialId || null, items: items.value.map(item => ({ name: item.name, standard: item.standard })) })
+  schemeSaveError.value = ''; saveSchemeOpen.value = true
+}
+async function saveSchemeInfo() {
+  if (!administrator.value || busy.value) return
+  busy.value = true; schemeSaveError.value = ''
+  try {
+    const saved = await api('/schemes', schemeSchema, json('POST', { ...schemeDraft, name: schemeDraft.name.trim() }))
+    standards.value.push(saved)
+    saveSchemeOpen.value = false
+    notice.value = '已新增检验标准方案；本次查验记录仍需保存'
+  } catch (problem) { schemeSaveError.value = problem instanceof Error ? problem.message : '检验标准方案保存失败' }
   finally { busy.value = false }
 }
 const availableSchemes = computed(() => standards.value)
@@ -148,6 +185,7 @@ function chooseMaterial(event: Event) {
   const material = catalog.value.find(m => m.id === group.value?.materialId)
   if (material) {
     fields.value.material_name = [material.name, material.model].filter(Boolean).join(' '); markDirty('material_name')
+    if (material.packaging) { report.value.packaging = material.packaging; markDirty('report.packaging') }
     for (const key of ['specification', 'company_name', 'address', 'contact', 'shelf_life'] as const) {
       if (!material[key]) continue
       fields.value[key] = material[key]; markDirty(key)
@@ -157,9 +195,15 @@ function chooseMaterial(event: Event) {
       }
     }
   }
-  const choices = standards.value.filter(s => s.material_id === group.value?.materialId)
-  if (group.value.inspectionEnabled && !items.value.length && !group.value.schemeId && choices.length === 1) replaceScheme(choices[0]?.id || null)
+  applyOnlyBoundScheme()
 }
+function applyOnlyBoundScheme() {
+  const current = group.value
+  if (!current?.inspectionEnabled || !current.materialId || current.items.length || current.schemeId) return
+  const choices = standards.value.filter(scheme => scheme.material_id === current.materialId)
+  if (choices.length === 1) replaceScheme(choices[0]?.id || null)
+}
+watch(() => group.value?.inspectionEnabled, enabled => { if (enabled) applyOnlyBoundScheme() })
 function chooseScheme(event: Event) {
   if (!(event.target instanceof HTMLSelectElement) || !group.value) return
   if (items.value.some(i => i.result || i.conclusion) && !window.confirm('更换方案会清空当前检验结果和结论，继续吗？')) { event.target.value = String(group.value.schemeId || ''); return }
@@ -179,7 +223,72 @@ function switchGroup(index: number) {
   selectedImage.value = current.images[0] || 0; angle.value = 0
 }
 function previewGroup(index: number, imageId: number) { switchGroup(index); selectedImage.value = imageId }
-function markDirty(key: string) { group.value?.dirty.add(key) }
+function markDirty(key: string) {
+  const current = group.value
+  if (!current) return
+  current.dirty.add(key)
+  if (key === 'shelf_life') current.expiry.autoShelfLife = null
+  if (key === 'expiry_date') current.expiry.autoExpiryDate = null
+}
+const expiryResultSchema = fieldsSchema.pick({ shelf_life: true, expiry_date: true }).extend({ warnings: z.array(z.string()) })
+const expiryWarnings = computed(() => [...new Set([shelfLifeDayNotice(fields.value.shelf_life), ...(group.value?.expiry.warnings || [])].filter(Boolean))])
+const expiryTimers = new Map<number, ReturnType<typeof setTimeout>>()
+function hasExpiryConflict(current: DraftGroup) {
+  return ['shelf_life', 'expiry_date'].some(key => current.job?.conflicts[key]?.length && !current.dirty.has(key))
+}
+function expiryInputKey(current: DraftGroup) {
+  return JSON.stringify([current.fields.production_dates, current.fields.shelf_life, current.fields.expiry_date, current.dirty.has('shelf_life'), current.dirty.has('expiry_date'), hasExpiryConflict(current)])
+}
+async function deriveExpiry(current: DraftGroup) {
+  clearTimeout(expiryTimers.get(current.key)); expiryTimers.delete(current.key)
+  const generation = ++current.expiry.generation
+  const inputKey = expiryInputKey(current)
+  if (hasExpiryConflict(current)) {
+    current.expiry.warnings = ['识别到多个保质期或有效期，请先核对冲突字段再计算。']
+    current.expiry.changed = false
+    return
+  }
+  const fillShelfLife = !current.dirty.has('shelf_life') && (!current.fields.shelf_life || current.fields.shelf_life === current.expiry.autoShelfLife)
+  const fillExpiryDate = !current.dirty.has('expiry_date') && (!current.fields.expiry_date || current.fields.expiry_date === current.expiry.autoExpiryDate)
+  const body = { production_dates: current.fields.production_dates, shelf_life: fillShelfLife ? '' : current.fields.shelf_life, expiry_date: fillExpiryDate ? null : current.fields.expiry_date || null }
+  try {
+    const result = await api('/shelf-life/derive', expiryResultSchema, json('POST', body))
+    if (!groups.value.includes(current) || current.expiry.generation !== generation || expiryInputKey(current) !== inputKey) return
+    if (fillShelfLife) { current.fields.shelf_life = result.shelf_life; current.expiry.autoShelfLife = result.shelf_life || null }
+    if (fillExpiryDate) { current.fields.expiry_date = result.expiry_date; current.expiry.autoExpiryDate = result.expiry_date }
+    current.expiry.inputKey = expiryInputKey(current)
+    current.expiry.warnings = result.warnings
+    current.expiry.changed = false
+  } catch (problem) {
+    if (current.expiry.generation !== generation || expiryInputKey(current) !== inputKey) return
+    current.expiry.warnings = [problem instanceof ApiError && problem.status === 422 ? '生产日期或保质期至格式不正确，请核对后再计算。' : '保质期自动计算暂不可用，可以手动填写。']
+    current.expiry.changed = false
+  }
+}
+async function normalizeEntryShelfLife() {
+  const current = group.value
+  const value = current?.fields.shelf_life
+  if (!current || !value) return
+  try {
+    const normalized = await normalizeShelfLife(value)
+    if (groups.value.includes(current) && current.fields.shelf_life === value) {
+      current.fields.shelf_life = normalized
+      if (current.expiry.autoShelfLife === value) current.expiry.autoShelfLife = normalized
+    }
+  } catch (problem) {
+    if (groups.value.includes(current) && current.fields.shelf_life === value) current.expiry.warnings = [problem instanceof Error ? problem.message : '保质期格式转换失败']
+  }
+}
+watch(() => groups.value.map(expiryInputKey), () => {
+  for (const current of groups.value) {
+    const inputKey = expiryInputKey(current)
+    if (current.expiry.inputKey === null) { current.expiry.inputKey = inputKey; continue }
+    if (current.expiry.inputKey === inputKey) continue
+    current.expiry.inputKey = inputKey; current.expiry.changed = true; current.expiry.generation++
+    clearTimeout(expiryTimers.get(current.key))
+    expiryTimers.set(current.key, setTimeout(() => { if (groups.value.includes(current)) void deriveExpiry(current) }, 250))
+  }
+})
 function reorderGroups(from: number, to: number) {
   if (busy.value || batchRetry.value) return
   const current = group.value
@@ -247,6 +356,7 @@ const tableRecords = computed(() => {
 })
 
 async function perform(work: () => Promise<void>) {
+  if (busy.value) return
   error.value = ''; notice.value = ''; busy.value = true
   try { await work() } catch (problem) { error.value = problem instanceof Error ? problem.message : '操作失败，请重试' }
   finally { busy.value = false }
@@ -343,13 +453,18 @@ async function openEditor(record: CheckRecord | null = null) {
 async function save(check: boolean) {
   await perform(async () => {
     if (!ledger.value) return
+    const savedLedgerId = ledger.value.id
+    const savedRecord = editing.value
     const savedGroup = group.value
-    const body = { inspection_enabled: group.value?.inspectionEnabled ?? false, fields: { ...fields.value, arrival_date: fields.value.arrival_date || null }, report: { ...report.value, inspection_date: report.value.inspection_date || null }, items: items.value, image_ids: group.value?.images || [], recognition_job_id: group.value?.jobId || null }
-    const record = editing.value
-      ? await api(`/records/${editing.value.id}`, recordSchema, json('PATCH', { ...body, version: editing.value.version, ...(group.value?.materialChanged ? { material_id: group.value.materialId } : {}), ...(group.value?.schemeChanged ? { scheme_id: group.value.schemeId } : {}) }))
-      : await api(`/ledgers/${ledger.value.id}/records`, recordSchema, json('POST', { ...body, material_id: group.value?.materialId, scheme_id: group.value?.schemeId }))
-    editing.value = record
+    if (!savedGroup) return
+    if (savedGroup.expiry.changed) await deriveExpiry(savedGroup)
+    const body = { inspection_enabled: savedGroup.inspectionEnabled, fields: { ...savedGroup.fields, arrival_date: savedGroup.fields.arrival_date || null, expiry_date: savedGroup.fields.expiry_date || null }, report: { ...savedGroup.report, inspection_date: savedGroup.report.inspection_date || null }, items: savedGroup.items, image_ids: savedGroup.images, recognition_job_id: savedGroup.jobId }
+    const record = savedRecord
+      ? await api(`/records/${savedRecord.id}`, recordSchema, json('PATCH', { ...body, version: savedRecord.version, ...(savedGroup.materialChanged ? { material_id: savedGroup.materialId } : {}), ...(savedGroup.schemeChanged ? { scheme_id: savedGroup.schemeId } : {}) }))
+      : await api(`/ledgers/${savedLedgerId}/records`, recordSchema, json('POST', { ...body, material_id: savedGroup.materialId, scheme_id: savedGroup.schemeId }))
     if (check) await api(`/records/${record.id}/check`, recordSchema, json('POST', { version: record.version }))
+    if (!groups.value.includes(savedGroup) || editing.value !== savedRecord) { notice.value = check ? '记录已保存并核对' : '记录已保存，待核对'; return }
+    editing.value = record
     if (groups.value.length > 1) {
       const selectedGroup = group.value
       const savedIndex = groups.value.findIndex(entry => entry === savedGroup)
@@ -358,7 +473,7 @@ async function save(check: boolean) {
       editing.value = null
       switchGroup(Math.max(0, groups.value.findIndex(entry => entry === selectedGroup)))
       notice.value = '当前记录已保存，请继续核对下一组'
-    } else { await loadRecords(); view.value = 'ledger'; notice.value = check ? '记录已保存并核对' : '记录已保存，待核对' }
+    } else { await loadRecords(); if (view.value === 'editor') view.value = 'ledger'; notice.value = check ? '记录已保存并核对' : '记录已保存，待核对' }
   })
 }
 function newBatchId() {
@@ -370,15 +485,18 @@ function newBatchId() {
 }
 async function saveBatch() {
   if (busy.value || !ledger.value || editing.value || (!batchRetry.value && !selectedGroups.value.length)) return
+  const savedLedgerId = ledger.value.id
   if (!batchRetry.value && selectedGroups.value.length > 200) { error.value = '单次最多保存 200 条记录，请减少勾选后分批操作'; return }
   await perform(async () => {
     if (!batchRetry.value) {
-      batchPendingKeys.value = selectedGroups.value.map(entry => entry.key)
+      const savedGroups = selectedGroups.value
+      await Promise.all(savedGroups.filter(entry => entry.expiry.changed).map(entry => deriveExpiry(entry)))
+      batchPendingKeys.value = savedGroups.map(entry => entry.key)
       batchRetry.value = JSON.stringify({
       request_id: newBatchId(), mark_checked: markBatchChecked.value,
-      records: selectedGroups.value.map(entry => ({
+      records: savedGroups.map(entry => ({
         inspection_enabled: entry.inspectionEnabled,
-        fields: { ...entry.fields, arrival_date: entry.fields.arrival_date || null },
+        fields: { ...entry.fields, arrival_date: entry.fields.arrival_date || null, expiry_date: entry.fields.expiry_date || null },
         report: { ...entry.report, inspection_date: entry.report.inspection_date || null },
         items: entry.items, image_ids: entry.images, recognition_job_id: entry.jobId,
         material_id: entry.materialId, scheme_id: entry.schemeId,
@@ -387,7 +505,7 @@ async function saveBatch() {
     }
     let saved: CheckRecord[]
     try {
-      saved = await api(`/ledgers/${ledger.value?.id}/records/batch`, z.array(recordSchema), { method: 'POST', body: batchRetry.value })
+      saved = await api(`/ledgers/${savedLedgerId}/records/batch`, z.array(recordSchema), { method: 'POST', body: batchRetry.value })
     } catch (cause) {
       if (cause instanceof ApiError && cause.status < 500 && cause.status !== 408) { batchRetry.value = null; batchPendingKeys.value = []; throw cause }
       throw new Error('批量保存结果尚未确认，请点击重试；同一批次不会重复保存。')
@@ -401,7 +519,7 @@ async function saveBatch() {
     if (groups.value.length) {
       switchGroup(Math.max(0, groups.value.findIndex(entry => entry.key === currentKey)))
       notice.value += `；还剩 ${groups.value.length} 条未保存`
-    } else { view.value = 'ledger'; await loadRecords() }
+    } else { if (view.value === 'editor') view.value = 'ledger'; await loadRecords() }
   })
 }
 async function uploadFiles(files: FileList | File[] | null) {
@@ -481,15 +599,17 @@ async function recognizeGroup(current: DraftGroup) {
 function jobActive(job: Job) { return ['queued', 'running'].includes(job.local_status) || ['queued', 'running'].includes(job.cloud_status) }
 async function monitorJob(current: DraftGroup, jobId: number, generation: number, fill: boolean) {
   current.requestState = 'polling'
-  let applied = false
+  let localApplied = false
+  let cloudApplied = false
   try { while (current.generation === generation && groups.value.includes(current)) {
     const job = await api(`/recognition/${jobId}`, jobSchema, { cache: 'no-store', signal: AbortSignal.timeout(15000) })
     if (current.generation !== generation) return
     current.job = job
-    if (fill && !applied && job.local_status === 'done') {
+    if (fill && ((!localApplied && job.local_status === 'done') || (!cloudApplied && job.cloud_status === 'done'))) {
       // Checked corrections take precedence only while the destination is blank.
-      const proposals = { ...job.fields, ...job.review_suggestions.fields }
-      for (const [key, value] of Object.entries(proposals)) {
+      const sources = [job.review_suggestions.fields, ...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
+      for (const proposals of sources) for (const [key, value] of Object.entries(proposals)) {
+        if (value === null || value === '' || (Array.isArray(value) && !value.length)) continue
         if (key.endsWith('_source')) continue
         const existing: unknown = Reflect.get(current.fields, key)
         const paired = key === 'address' || key === 'contact'
@@ -504,7 +624,8 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
           if (parsed.success) Object.assign(current.fields, parsed.data)
         }
       }
-      applied = true
+      localApplied ||= job.local_status === 'done'
+      cloudApplied ||= job.cloud_status === 'done'
     }
     if (!jobActive(job)) break
     await new Promise(resolve => setTimeout(resolve, 500))
@@ -578,8 +699,8 @@ async function download(kind: 'xlsx' | 'docx') {
       <div class="page-heading"><div><h1>原辅料查验记录</h1><p class="muted">查看全部记录，核对与修改自己的记录。</p></div><button v-if="!allCompanies" class="primary" @click="openEditor()">上传与录入</button></div>
       <section class="table-panel">
         <div class="filters"><label class="search-label">查找记录<input v-model="filter.text" type="search" placeholder="物料名称、供应商或生产商"></label><label>状态<select v-model="filter.status"><option value="">全部状态</option><option value="pending">待核对</option><option value="checked">已核对</option></select></label><label>到货日期从<input v-model="filter.from" type="date"></label><label>到<input v-model="filter.to" type="date"></label><label>创建人<select v-model="filter.creator"><option :value="0">所有人员</option><option v-for="person in people" :key="person.id" :value="person.id">{{ person.username }}</option></select></label><label class="checkbox-label"><input v-model="filter.mine" type="checkbox">我创建的</label></div>
-        <p class="muted">先勾选需要导出的记录。Excel 按公司分表；多条 Word 每条一份报告，打包为 ZIP 下载。</p><div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedVisible.length }} 条</span><div><button @click="selectedIds = filteredRecords.filter(r => r.status !== 'void').map(r => r.id)">全选当前记录</button><button @click="selectedIds = []">清空选择</button><button v-if="administrator" class="danger-button" :disabled="busy || !selectedVisible.length" @click="voidSelected">批量作废</button><button :disabled="busy || !selectedVisible.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedVisible.length" @click="download('docx')">导出 Word</button></div></div>
-        <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies" :aria-sort="sortDirection('ledger')"><button class="sort-heading" aria-label="按公司台账排序" @click="toggleSort('ledger')">公司台账 <span aria-hidden="true">{{ sort?.key === 'ledger' ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th v-for="column in ledgerColumns" :key="column.key" :aria-sort="sortDirection(column.key)"><button class="sort-heading" :aria-label="`按${column.label}排序`" @click="toggleSort(column.key)">{{ column.label }} <span aria-hidden="true">{{ sort?.key === column.key ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th>操作</th></tr></thead><tbody><tr v-for="record in tableRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="inspection-status" :class="{ enabled: record.inspection_enabled }">{{ record.inspection_enabled ? '检验' : '未检验' }}</span></td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (administrator || user.id === record.creator_id) ? '核对 / 编辑' : '查看' }}</button></td></tr></tbody></table></div>
+        <p class="muted">先勾选需要导出的记录。Excel 按公司分表；多条 Word 每条一份报告，打包为 ZIP 下载。</p><div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedVisible.length }} 条</span><div><button @click="selectedIds = filteredRecords.filter(r => r.status !== 'void').map(r => r.id)">全选当前记录</button><button @click="selectedIds = []">清空选择</button><button v-if="administrator" class="danger-button" :disabled="busy || !selectedVisible.length" @click="voidSelected">批量作废</button><button :disabled="busy || !selectedVisible.length" @click="openPreview(selectedVisible.map(record => record.id))">预览 / 打印</button><button :disabled="busy || !selectedVisible.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedVisible.length" @click="download('docx')">导出 Word</button></div></div>
+        <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies" :aria-sort="sortDirection('ledger')"><button class="sort-heading" aria-label="按公司台账排序" @click="toggleSort('ledger')">公司台账 <span aria-hidden="true">{{ sort?.key === 'ledger' ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th v-for="column in ledgerColumns" :key="column.key" :aria-sort="sortDirection(column.key)"><button class="sort-heading" :aria-label="`按${column.label}排序`" @click="toggleSort(column.key)">{{ column.label }} <span aria-hidden="true">{{ sort?.key === column.key ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th>操作</th></tr></thead><tbody><tr v-for="record in tableRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="inspection-status" :class="{ enabled: record.inspection_enabled }">{{ record.inspection_enabled ? '检验' : '未检验' }}</span></td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openPreview([record.id])">查看</button><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (administrator || user.id === record.creator_id) ? '核对 / 编辑' : '查看记录' }}</button></td></tr></tbody></table></div>
         <div v-if="!filteredRecords.length" class="empty">暂无记录。点击“上传与录入”开始。</div>
       </section>
     </main>
@@ -613,13 +734,13 @@ async function download(kind: 'xlsx' | 'docx') {
           <div v-if="suggestedFields.length"><h3>云端建议</h3><p class="muted">按需填入，不自动覆盖人工修改。</p><div v-for="[key, value] in suggestedFields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applySuggestion(key, value)">填入</button></div></div>
         </div>
       </aside>
-        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><label v-for="field in textFields" :key="field.key">{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)"></label><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div></section>
+        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><template v-for="field in textFields" :key="field.key"><label>{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)" @blur="field.key === 'shelf_life' && normalizeEntryShelfLife()"></label><label v-if="field.key === 'shelf_life'">保质期至<input v-model="fields.expiry_date" type="date" @input="markDirty('expiry_date')"></label></template><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div><p v-for="warning in expiryWarnings" :key="warning" class="notice" role="status">{{ warning }}</p></section>
           <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
           <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates"></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写"></textarea></label><label class="wide">抽检项目<input v-model="fields.sampling_items"></label><label class="wide">备注<textarea v-model="fields.notes" rows="2"></textarea></label></div></section>
           <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
-          <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
-          <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging"></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
-        </fieldset></div></div>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><button v-if="administrator" type="button" @click="reviewScheme">保存为检验标准方案</button><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging" @input="markDirty('report.packaging')"></label><label>产品批号<input v-model="report.batch_number"></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
+        </fieldset><ReportAttachments :record-id="editing?.id || null" :record-version="editing?.version || null" :editable="editable && !busy && !batchRetry" @record-changed="updateAttachmentRecord" /></div></div>
       <footer class="savebar save-bar">
         <div class="save-summary"><span>{{ editable ? '业务字段允许留空' : '当前记录只读' }}</span><template v-if="editable && !editing && mode === 'batch'"><span>共 {{ groups.length }} 条，已选 {{ selectedGroups.length }} 条</span><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = groups.map(entry => entry.key)">全选分组</button><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = []">全部清空</button></template></div>
         <div class="save-actions"><button :disabled="busy || !!batchRetry" @click="leaveEditor">{{ editorReturn === 'recycle' ? '返回回收站' : '返回台账' }}</button>
@@ -628,7 +749,9 @@ async function download(kind: 'xlsx' | 'docx') {
         </div>
       </footer>
     </main>
-    <el-dialog v-model="saveMaterialOpen" title="保存为物料信息" width="min(720px, 95vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy"><form @submit.prevent="saveMaterialInfo"><fieldset :disabled="busy"><p class="muted">核对后新增一条共享物料，不覆盖已有物料。只保存共享物料资料，本次查验记录仍需另行保存。</p><p v-if="materialSaveError" role="alert" class="error">{{ materialSaveError }}</p><div class="field-grid"><label>物料名称<input v-model="materialDraft.name" required></label><label>型号<input v-model="materialDraft.model"></label><label>常用别名<input v-model="materialDraft.aliases"></label><label>规格<input v-model="materialDraft.specification"></label><label>供应商或生产商<input v-model="materialDraft.company_name"></label><label>地址<input v-model="materialDraft.address"></label><label>联系方式<input v-model="materialDraft.contact"></label><label>保质期<input v-model="materialDraft.shelf_life"></label><label>地址来源<select v-model="materialDraft.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="materialDraft.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div><div class="button-row"><button type="submit" class="primary">确认新增物料</button><button type="button" @click="saveMaterialOpen = false">取消</button></div></fieldset></form></el-dialog>
+    <ReportPreview v-if="previewIds.length" :user-id="user.id" :record-ids="previewIds" @close="previewIds = []" />
+    <el-dialog v-model="saveSchemeOpen" title="保存为检验标准方案" width="min(720px, 95vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy"><form @submit.prevent="saveSchemeInfo"><fieldset :disabled="busy"><p class="muted">核对后新增共享方案，只保存项目名称和标准规定。本次检验结果与结论保留在当前记录中，记录仍需另行保存。</p><p v-if="schemeSaveError" role="alert" class="error">{{ schemeSaveError }}</p><div class="field-grid"><label>方案名称<input v-model="schemeDraft.name" maxlength="120" required></label><label>方案所属物料<select v-model="schemeDraft.material_id" aria-label="方案所属物料"><option :value="null">不绑定物料（通用方案）</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label></div><div v-for="(item, index) in schemeDraft.items" :key="index" class="field-grid"><label>项目名称<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label></div><p v-if="!schemeDraft.items.length" class="muted">当前没有检验项目，可返回录入界面添加后再保存。</p><div class="button-row"><button type="submit" class="primary" :disabled="!schemeDraft.items.length">确认新增方案</button><button type="button" @click="saveSchemeOpen = false">取消</button></div></fieldset></form></el-dialog>
+    <el-dialog v-model="saveMaterialOpen" title="保存为物料信息" width="min(720px, 95vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy"><form @submit.prevent="saveMaterialInfo"><fieldset :disabled="busy"><p class="muted">核对后新增一条共享物料，不覆盖已有物料。只保存共享物料资料，本次查验记录仍需另行保存。</p><p v-if="materialSaveError" role="alert" class="error">{{ materialSaveError }}</p><div class="field-grid"><label>物料名称<input v-model="materialDraft.name" required></label><label>型号<input v-model="materialDraft.model"></label><label>常用别名<input v-model="materialDraft.aliases"></label><label>规格<input v-model="materialDraft.specification"></label><label>包装<input v-model="materialDraft.packaging"></label><label>供应商或生产商<input v-model="materialDraft.company_name"></label><label>地址<input v-model="materialDraft.address"></label><label>联系方式<input v-model="materialDraft.contact"></label><label>保质期<input v-model="materialDraft.shelf_life" @blur="normalizeMaterialDraftShelfLife"></label><label>地址来源<select v-model="materialDraft.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="materialDraft.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div><p v-if="shelfLifeDayNotice(materialDraft.shelf_life)" class="notice" role="status">{{ shelfLifeDayNotice(materialDraft.shelf_life) }}</p><div class="button-row"><button type="submit" class="primary">确认新增物料</button><button type="button" @click="saveMaterialOpen = false">取消</button></div></fieldset></form></el-dialog>
     <el-dialog v-model="createLedger" title="新建公司台账" width="min(480px, 92vw)"><form @submit.prevent="addLedger"><label>公司台账名称<input v-model="ledgerName" maxlength="31" required></label><p class="muted">将用作 Excel 工作表名称，最多31个字符。</p><button class="primary" :disabled="busy">建立台账</button></form></el-dialog>
     <el-dialog v-model="historyOpen" title="修改历史" width="min(850px, 95vw)"><article v-for="entry in histories" :key="entry.at" class="history-entry"><h3>{{ actionNames[entry.action] || entry.action }}</h3><p class="muted">{{ people.find(p => p.id === entry.actor_id)?.username }} · {{ new Date(entry.at).toLocaleString('zh-CN') }} · 版本 {{ entry.snapshot.version }}</p><details><summary>查看当时内容</summary><dl><template v-for="(value, key) in entry.snapshot.fields" :key="key"><dt>{{ fieldNames[key] || key }}</dt><dd>{{ formatSuggestion(value) || '（空白）' }}</dd></template></dl><div v-for="(item, index) in entry.snapshot.items" :key="index">{{ item.name }} / {{ item.standard }} / {{ item.result }} / {{ item.conclusion }}</div></details></article><button @click="historyOpen = false">关闭历史</button></el-dialog><el-dialog v-model="showLarge" title="包装原图" width="min(1100px, 96vw)"><img v-if="selectedImage" :src="`/api/images/${selectedImage}`" alt="包装图片放大预览" class="large-photo"></el-dialog>
   </div>

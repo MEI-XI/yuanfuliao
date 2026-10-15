@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
-from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
+from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, ShelfLifeInput, UserChange, UserCreate, VersionInput
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
@@ -36,8 +36,11 @@ def user_view(user):
 
 
 def record_view(item):
-    return {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "voided_at", "inspection_enabled", "version",
+    from app.expiry import normalize_shelf_life
+    result = {key: getattr(item, key) for key in ("id", "ledger_id", "creator_id", "fields", "status", "voided_at", "inspection_enabled", "version",
                                                "created_at", "updated_at", "checker_id", "checked_at", "material_id", "scheme_name", "items", "report", "image_ids", "recognition_job_id")}
+    result['fields'] = item.fields | {'shelf_life': normalize_shelf_life(item.fields.get('shelf_life', ''))}
+    return result
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
@@ -258,6 +261,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return item
 
     register_recycle_routes(app, db, current_user, administrator, record_view, append_history)
+    from app.report_attachments import register_report_attachment_routes
+    register_report_attachment_routes(app, db, current_user, get_record, record_view, append_history)
+
+    @app.post('/api/shelf-life/derive')
+    def derive_expiry(body: ShelfLifeInput, user: User = Depends(current_user)):
+        from app.expiry import derive_shelf_life
+        return derive_shelf_life(**body.model_dump(mode='json'))
 
     def create_record(ledger_id, body, user, session):
         if not session.get(Ledger, ledger_id):
@@ -281,6 +291,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if "sampling_items" not in body.fields.model_fields_set:
             fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
         report = body.report.model_dump(mode="json")
+        if material and 'packaging' not in body.report.model_fields_set:
+            report['packaging'] = material.packaging
         if scheme and 'basis' not in body.report.model_fields_set:
             report['basis'] = scheme.name
         item = Record(ledger_id=ledger_id, creator_id=user.id, fields=fields, material_id=body.material_id,
@@ -425,7 +437,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/materials")
     def materials(user: User = Depends(current_user), session: Session = Depends(db)):
-        return [{"id": m.id, **{field: getattr(m, field) for field in MaterialInput.model_fields}}
+        from app.expiry import normalize_shelf_life
+        return [{"id": m.id, **{field: getattr(m, field) for field in MaterialInput.model_fields},
+                 'shelf_life': normalize_shelf_life(m.shelf_life)}
                 for m in session.scalars(select(Material).order_by(Material.id))]
 
     @app.post("/api/materials", status_code=201)
@@ -502,6 +516,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if not body.include_pending and any(r.status == "pending" for r in rows):
             raise HTTPException(409, "所选记录尚未核对，确认后才能导出")
         return rows
+
+    from app.previewing import register_preview_routes
+    register_preview_routes(app, db, current_user, export_records)
 
     @app.post('/api/templates/convert/{kind}')
     def convert_uploaded_template(kind: str, file: UploadFile, user: User = Depends(current_user)):

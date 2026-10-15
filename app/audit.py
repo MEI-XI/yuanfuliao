@@ -19,6 +19,8 @@ ACTIONS = {
     'add_record': '创建记录', 'add_batch': '批量创建记录', 'edit_record': '修改记录',
     'export_excel': '导出台账', 'export_word': '导出检验报告', 'upload_image': '上传照片',
     'recognize': '发起识别',
+    'upload_report': '上传检验报告', 'delete_report': '删除检验报告',
+    'preview_export': '预览导出',
 }
 
 
@@ -29,6 +31,8 @@ def register_audit(app, engine, db, current_user):
         actor = getattr(request.state, 'audit_actor', None)
         route = request.scope.get('route')
         name = getattr(route, 'name', '')
+        if name == 'derive_expiry':
+            return response
         if actor and 200 <= response.status_code < 300 and (
             request.method in ('POST', 'PUT', 'PATCH', 'DELETE') or name == 'reveal_password'
         ):

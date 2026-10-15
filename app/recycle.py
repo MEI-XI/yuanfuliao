@@ -4,7 +4,7 @@ from datetime import timedelta
 from threading import Event, Thread
 
 from fastapi import Depends, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
 
 from app import models
@@ -23,8 +23,25 @@ def record_expired(item, now=None):
 
 
 def delete_records(session, record_ids):
+    from app.report_attachments import ReportAttachment, report_attachment_path
+    keys = session.scalars(select(ReportAttachment.storage_key).where(ReportAttachment.record_id.in_(record_ids)))
+    session.info.setdefault('deleted_report_files', set()).update(report_attachment_path(key) for key in keys)
     session.execute(delete(History).where(History.record_id.in_(record_ids)))
     session.execute(delete(Record).where(Record.id.in_(record_ids)))
+
+
+@event.listens_for(Session, 'after_commit')
+def remove_deleted_report_files(session):
+    for path in session.info.pop('deleted_report_files', ()):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception('Could not remove expired report file %s', path.name)
+
+
+@event.listens_for(Session, 'after_rollback')
+def retain_rolled_back_report_files(session):
+    session.info.pop('deleted_report_files', None)
 
 
 def purge_expired_records(session, now=None):

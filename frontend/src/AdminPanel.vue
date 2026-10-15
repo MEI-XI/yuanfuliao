@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
-import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, type User, type Ledger } from './api'
+import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
 const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
 const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
@@ -32,6 +32,17 @@ async function showEditor(kind: EditorKind, originalName?: string) {
 function openMaterial(entry?: z.infer<typeof materialSchema>) {
   Object.assign(material, entry || { id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
   void showEditor('material', entry?.name)
+}
+async function normalizeMaterialShelfLife() {
+  const value = material.shelf_life
+  const currentEditor = editor.value
+  if (!value) return
+  try {
+    const normalized = await normalizeShelfLife(value)
+    if (editor.value === currentEditor && material.shelf_life === value) material.shelf_life = normalized
+  } catch (problem) {
+    if (editor.value === currentEditor && material.shelf_life === value) error.value = problem instanceof Error ? problem.message : '保质期格式转换失败'
+  }
 }
 function openScheme(entry?: z.infer<typeof schemeSchema>) {
   Object.assign(scheme, entry ? { ...entry, items: entry.items.map(item => ({ name: item.name, standard: item.standard, unit: '' })) } : { id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
@@ -152,8 +163,8 @@ async function testCloud() {
     <section v-if="editor" class="admin-card admin-form" role="region" :aria-label="editor.title">
       <div class="module-heading"><h2 ref="formHeading" tabindex="-1">{{ editor.title }}</h2><button :disabled="busy" @click="closeEditor">返回列表</button></div>
       <form v-if="editor.kind === 'material'" @submit.prevent="saveMaterial"><fieldset :disabled="busy">
-        <div class="field-grid"><label>物料名称<input v-model="material.name" required></label><label>型号<input v-model="material.model"></label><label class="wide">常用别名<input v-model="material.aliases"></label><label>规格<input v-model="material.specification"></label><label>供应商或生产商<input v-model="material.company_name"></label><label>地址<input v-model="material.address"></label><label>联系方式<input v-model="material.contact"></label><label>保质期<input v-model="material.shelf_life"></label><label>地址来源<select v-model="material.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="material.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div>
-        <div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '创建物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
+        <div class="field-grid"><label>物料名称<input v-model="material.name" required></label><label>型号<input v-model="material.model"></label><label class="wide">常用别名<input v-model="material.aliases"></label><label>规格<input v-model="material.specification"></label><label>包装<input v-model="material.packaging"></label><label>供应商或生产商<input v-model="material.company_name"></label><label>地址<input v-model="material.address"></label><label>联系方式<input v-model="material.contact"></label><label>保质期<input v-model="material.shelf_life" @blur="normalizeMaterialShelfLife"></label><label>地址来源<select v-model="material.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="material.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div>
+        <p v-if="shelfLifeDayNotice(material.shelf_life)" class="notice" role="status">{{ shelfLifeDayNotice(material.shelf_life) }}</p><div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '创建物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'scheme'" @submit.prevent="saveScheme"><fieldset :disabled="busy">
         <div class="field-grid"><label>方案所属物料<select v-model="scheme.material_id"><option :value="null">不绑定物料（通用方案）</option><option v-for="entry in materials" :key="entry.id" :value="entry.id">{{ [entry.name, entry.model].filter(Boolean).join(' ') }}</option></select></label><label>方案名称<input v-model="scheme.name" required></label></div>

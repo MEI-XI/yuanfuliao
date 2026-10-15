@@ -14,6 +14,8 @@ from jinja2.sandbox import SandboxedEnvironment
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
+from app.expiry import normalize_shelf_life
+
 
 def template_dir():
     return Path(os.getenv("TEMPLATE_DIR", "templates"))
@@ -49,7 +51,7 @@ def excel_bytes(records, ledger_names, template=None):
             f = record.fields
             values = [date.fromisoformat(f["arrival_date"]) if f.get("arrival_date") else None,
                       f.get("material_name"), dates_text(f.get("production_dates", [])).replace("\n", "、"), f.get("specification"),
-                      f.get("company_name"), sourced(f, "address"), sourced(f, "contact"), f.get("shelf_life"),
+                      f.get("company_name"), sourced(f, "address"), sourced(f, "contact"), normalize_shelf_life(f.get("shelf_life", "")),
                       f.get("received_quantity"), f.get("certificates"), f.get("sensory"), f.get("sampling_items"), f.get("notes")]
             for column, value in enumerate(values, 1):
                 cell = sheet.cell(index, column)
@@ -80,6 +82,10 @@ def excel_bytes(records, ledger_names, template=None):
             sheet.column_dimensions[sheet.cell(2, column).column_letter].width = min(255, width)
         sheet.print_title_rows = "1:2"
         sheet.print_area = f"A1:M{sheet.max_row}"
+        sheet.page_setup.orientation = 'landscape'
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
     for template in list(workbook.worksheets):
         if all(template is not sheet for sheet, _ in sheets):
             workbook.remove(template)
@@ -99,9 +105,10 @@ def word_bytes(record, template=None):
     fields = record.fields
     report = record.report
     context = fields | report | {
+        "shelf_life": normalize_shelf_life(fields.get("shelf_life", "")),
         "production_dates": dates_text(fields.get("production_dates", [])),
         "inspection_date": dates_text([report["inspection_date"]]) if report.get("inspection_date") else "",
-        "batch_blank": "", "items": [item | {'unit': ''} for item in record.items],
+        "batch_blank": report.get("batch_number", "\\"), "items": [item | {'unit': ''} for item in record.items],
         "inspector": "", "approver": "",
         "report_reference": "其他检验项目依据该公司提供的内检报告为准" if report.get("internal_report") == "是" else "",
     }
@@ -114,7 +121,8 @@ def word_bytes(record, template=None):
                     jinja_env=SandboxedEnvironment(autoescape=True), autoescape=True)
     output = BytesIO()
     template.save(output)
-    return output.getvalue()
+    from app.report_form import align_inspection_tables
+    return align_inspection_tables(output.getvalue())
 
 
 def report_filename(record):

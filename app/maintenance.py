@@ -3,6 +3,7 @@ from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.models import History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, User
+from app.report_attachments import ReportAttachment
 
 
 def register_maintenance_routes(app, db, administrator):
@@ -49,6 +50,7 @@ def register_maintenance_routes(app, db, administrator):
             select(History.id).where(History.actor_id == user_id),
             select(Photo.id).where(Photo.owner_id == user_id),
             select(RecognitionJob.id).where(RecognitionJob.owner_id == user_id),
+            select(ReportAttachment.id).where(ReportAttachment.owner_id == user_id),
         )
         if any(session.scalar(query.limit(1)) is not None for query in references):
             raise HTTPException(409, '该账号已有业务记录、照片或识别历史，请改为停用账号，以保留责任人信息')

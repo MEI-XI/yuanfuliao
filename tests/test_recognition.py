@@ -1,25 +1,99 @@
 import time
+import json
 from io import BytesIO
 
+import httpx
+import pytest
 from PIL import Image
 
 from conftest import bootstrap
 from test_records import new_ledger
 
 
-def run_label(client, ledger, texts):
+def run_label(client, ledger, texts, cloud_enabled=False):
     photo = BytesIO()
     Image.new('RGB', (80, 100), 'white').save(photo, format='JPEG')
     image_id = client.post(f'/api/ledgers/{ledger}/images', files={'file': ('label.jpg', photo.getvalue(), 'image/jpeg')}).json()['id']
     client.app.state.scan_image = lambda path: {'texts': texts, 'boxes': []}
-    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': False}).json()
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': [image_id], 'cloud_enabled': cloud_enabled}).json()
     for _ in range(100):
         job = client.get(f'/api/recognition/{job["id"]}').json()
-        if job['local_status'] in {'done', 'failed'}:
+        if job['local_status'] in {'done', 'failed'} and (not cloud_enabled or job['cloud_status'] in {'done', 'failed'}):
             break
         time.sleep(.02)
     assert job['local_status'] == 'done'
     return job
+
+
+def test_recognition_derives_expiry_from_printed_production_and_duration(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', '保质期：12个月'])
+    assert job['fields']['expiry_date'] == '2027-01-13'
+    assert job['fields']['shelf_life'] == '12个月'
+
+
+@pytest.mark.parametrize('expiry_label', ['保质期至', '有效期至', '到期日期'])
+def test_recognition_derives_duration_from_printed_expiry(client, expiry_label):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', f'{expiry_label}：2027.01.13'])
+    assert job['fields']['expiry_date'] == '2027-01-13'
+    assert job['fields']['shelf_life'] == '12个月'
+
+
+def test_expiry_label_date_is_not_reused_as_missing_production_date(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：', '有效期至：', '2027.01.13'])
+    assert job['fields']['expiry_date'] == '2027-01-13'
+    assert job['fields'].get('production_dates', []) == []
+    assert job['fields'].get('shelf_life', '') == ''
+
+
+def test_printed_expiry_takes_precedence_over_calculated_local_expiry(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', '保质期：12个月', '有效期至：2027.01.14'])
+    assert job['fields']['expiry_date'] == '2027-01-14'
+    assert job['fields']['shelf_life'] == '12个月'
+
+
+def test_missing_expiry_does_not_reuse_a_split_production_date(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：', '2026.01.14', '有效期至：见封口'])
+    assert job['fields']['production_dates'] == ['2026-01-14']
+    assert not job['fields'].get('expiry_date')
+    assert not job['fields'].get('shelf_life')
+
+
+def test_multiple_printed_durations_require_review_before_deriving_expiry(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', '保质期：常温12个月，冷藏18个月'])
+    assert not job['fields'].get('shelf_life')
+    assert not job['fields'].get('expiry_date')
+    assert job['conflicts']['shelf_life'] == ['12个月', '18个月']
+
+
+def test_multiple_printed_expiries_require_review_before_derivation(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', '保质期：12个月', '有效期至：2027.01.13', '到期日期：2027.02.13'])
+    assert not job['fields'].get('expiry_date')
+    assert job['conflicts']['expiry_date'] == ['2027-01-13', '2027-02-13']
+
+
+@pytest.mark.parametrize('cloud_fields, expected_duration, expected_expiry', [
+    ({'production_dates': ['2026-01-14'], 'shelf_life': '12个月'}, '12个月', '2027-01-13'),
+    ({'production_dates': ['2026-01-14'], 'expiry_date': '2027-01-13'}, '12个月', '2027-01-13'),
+])
+def test_cloud_recognition_fills_missing_expiry_information(client, monkeypatch, cloud_fields, expected_duration, expected_expiry):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(cloud_fields)}}]})
+    ), **kwargs))
+    job = run_label(client, ledger, ['品名：甘氨酸'], cloud_enabled=True)
+    assert job['cloud_status'] == 'done', job['cloud_error']
+    assert job['cloud_fields']['shelf_life'] == expected_duration
+    assert job['cloud_fields']['expiry_date'] == expected_expiry
 
 
 def test_checked_corrections_suggest_stable_fields_only_and_with_source(client):
@@ -246,7 +320,7 @@ def test_label_title_and_split_date_are_extracted_instead_of_brand(client):
         time.sleep(.02)
     assert result['fields']['material_name'] == 'L-精氨酸'
     assert result['fields']['specification'] == '25kg'
-    assert result['fields']['shelf_life'] == '2年'
+    assert result['fields']['shelf_life'] == '24个月'
     assert result['fields']['production_dates'] == ['2026-09-19']
 
 

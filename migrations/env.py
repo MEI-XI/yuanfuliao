@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
 from app.models import Base
+from app.report_attachments import ReportAttachment  # Register attachment metadata.
 
 config = context.config
 load_dotenv()

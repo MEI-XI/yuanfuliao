@@ -8,7 +8,7 @@ def test_material_details_persist_and_remain_admin_maintained(client):
         'specification': '25kg/袋', 'company_name': '甲供应商',
         'address': '河北石家庄', 'contact': '0311-12345678',
         'shelf_life': '24个月', 'address_source': 'manufacturer',
-        'contact_source': 'supplier',
+        'contact_source': 'supplier', 'packaging': '纸塑复合袋',
     }
     response = client.post('/api/materials', json=body)
     assert response.status_code == 201, response.text
@@ -30,7 +30,7 @@ def test_material_details_default_empty_and_validate_attribution(client):
     bootstrap(client)
     response = client.post('/api/materials', json={'name': '旧式物料'})
     assert response.status_code == 201
-    for field in ['specification', 'company_name', 'address', 'contact', 'shelf_life', 'address_source', 'contact_source']:
+    for field in ['specification', 'company_name', 'address', 'contact', 'shelf_life', 'packaging', 'address_source', 'contact_source']:
         assert response.json()[field] == ''
     for field in ['address_source', 'contact_source']:
         assert client.post('/api/materials', json={'name': '错误来源', field: 'other'}).status_code == 422
@@ -53,5 +53,5 @@ def test_material_migration_keeps_existing_catalog_entries(client):
     assert material['name'] == '已有物料'
     assert material['model'] == '食品级'
     assert material['aliases'] == '旧别名'
-    for field in ['specification', 'company_name', 'address', 'contact', 'shelf_life', 'address_source', 'contact_source']:
+    for field in ['specification', 'company_name', 'address', 'contact', 'shelf_life', 'packaging', 'address_source', 'contact_source']:
         assert material[field] == ''

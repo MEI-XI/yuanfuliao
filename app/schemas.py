@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.expiry import normalize_shelf_life
+
 
 class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -48,11 +50,17 @@ class RecordFields(Input):
     address_source: Literal["", "supplier", "manufacturer"] = ""
     contact_source: Literal["", "supplier", "manufacturer"] = ""
     shelf_life: str = ""
+    expiry_date: date | None = None
     received_quantity: str = ""
     certificates: str = ""
     sensory: str = ""
     sampling_items: str = ""
     notes: str = ""
+
+    @field_validator('shelf_life')
+    @classmethod
+    def shelf_life_months(cls, value):
+        return normalize_shelf_life(value)
 
 
 class InspectionItem(Input):
@@ -65,6 +73,7 @@ class InspectionItem(Input):
 
 class ReportFields(Input):
     packaging: str = ""
+    batch_number: str = "\\"
     basis: str = ""
     inspection_date: date | None = Field(default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai")).date())
     internal_report: str = ""
@@ -129,8 +138,14 @@ class MaterialInput(Input):
     address: str = Field(default="", max_length=1000)
     contact: str = Field(default="", max_length=500)
     shelf_life: str = Field(default="", max_length=200)
+    packaging: str = Field(default="", max_length=500)
     address_source: Literal["", "supplier", "manufacturer"] = ""
     contact_source: Literal["", "supplier", "manufacturer"] = ""
+
+    @field_validator('shelf_life')
+    @classmethod
+    def shelf_life_months(cls, value):
+        return normalize_shelf_life(value)
 
 
 class StandardItem(Input):
@@ -149,6 +164,12 @@ class ExportInput(Input):
     record_ids: list[int] = Field(min_length=1, max_length=500)
     include_pending: bool = False
     template_base64: str | None = Field(default=None, max_length=14_000_000)
+
+
+class ShelfLifeInput(Input):
+    production_dates: list[date] = Field(default_factory=list)
+    shelf_life: str = ""
+    expiry_date: date | None = None
 
 
 class PartnerInput(Input):

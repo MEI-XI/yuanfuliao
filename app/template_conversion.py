@@ -123,7 +123,8 @@ def _office_available(kind):
         return False
 
 
-def _run_converter(command, directory, timeout=45, environment=None):
+def _run_converter(command, directory, timeout=45, environment=None,
+                   timeout_message='模板转换超时，请关闭该文件后重试，或另存为docx/xlsx再上传'):
     try:
         return subprocess.run(command, capture_output=True, timeout=timeout, check=False, env=environment,
                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -136,10 +137,10 @@ def _run_converter(command, directory, timeout=45, environment=None):
             if own_pid.isdigit():
                 subprocess.run(['taskkill', '/PID', own_pid, '/F'], capture_output=True,
                                timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
-        raise HTTPException(504, '模板转换超时，请关闭该文件后重试，或另存为docx/xlsx再上传') from None
+        raise HTTPException(504, timeout_message) from None
 
 
-def _office_command(source, destination, kind, directory):
+def _office_command(source, destination, kind, directory, pdf=False):
     # Paths are generated internally, passed as environment variables, never
     # interpolated into PowerShell source. New COM instances open only our copy.
     script = r'''
@@ -167,13 +168,21 @@ try {
         if ($officeProcess -and $existing -notcontains $officeProcess) {
             [IO.File]::WriteAllText($env:TEMPLATE_PID, [string]$officeProcess)
         }
-        $document.SaveAs2($env:TEMPLATE_DESTINATION, 16)
+        if ($env:TEMPLATE_OUTPUT -eq 'pdf') {
+            $document.ExportAsFixedFormat($env:TEMPLATE_DESTINATION, 17)
+        } else {
+            $document.SaveAs2($env:TEMPLATE_DESTINATION, 16)
+        }
     } else {
         $app.DisplayAlerts = $false
         $app.EnableEvents = $false
         $app.AskToUpdateLinks = $false
         $document = $app.Workbooks.Open($env:TEMPLATE_SOURCE, 0, $true, [Type]::Missing, 'template-no-password', [Type]::Missing, $true)
-        $document.SaveAs($env:TEMPLATE_DESTINATION, 51)
+        if ($env:TEMPLATE_OUTPUT -eq 'pdf') {
+            $document.ExportAsFixedFormat(0, $env:TEMPLATE_DESTINATION)
+        } else {
+            $document.SaveAs($env:TEMPLATE_DESTINATION, 51)
+        }
     }
 } finally {
     try {
@@ -186,7 +195,8 @@ try {
     # Use a child-specific environment, so simultaneous conversions cannot share
     # input/output paths or mutate the web process environment.
     environment = dict(os.environ, TEMPLATE_OFFICE_APP='Word.Application' if kind == 'docx' else 'Excel.Application',
-                       TEMPLATE_KIND=kind, TEMPLATE_SOURCE=str(source), TEMPLATE_DESTINATION=str(destination),
+                       TEMPLATE_KIND=kind, TEMPLATE_OUTPUT='pdf' if pdf else kind,
+                       TEMPLATE_SOURCE=str(source), TEMPLATE_DESTINATION=str(destination),
                        TEMPLATE_PID=str(directory / 'office.pid'))
     encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
     command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded]

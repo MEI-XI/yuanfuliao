@@ -10,12 +10,12 @@ export const itemSchema = z.object({ name: z.string().default(''), standard: z.s
 export const fieldsSchema = z.object({
   arrival_date: z.string().nullable().default(null), material_name: z.string().default(''),
   production_dates: z.array(z.string()).default([]), specification: z.string().default(''), company_name: z.string().default(''),
-  address: z.string().default(''), contact: z.string().default(''), shelf_life: z.string().default(''),
+  address: z.string().default(''), contact: z.string().default(''), shelf_life: z.string().default(''), expiry_date: z.string().nullable().default(null),
   received_quantity: z.string().default(''), certificates: z.string().default(''), sensory: z.string().default(''),
   sampling_items: z.string().default(''), notes: z.string().default(''),
   address_source: z.enum(['', 'supplier', 'manufacturer']).default(''), contact_source: z.enum(['', 'supplier', 'manufacturer']).default(''),
 })
-export const reportSchema = z.object({ packaging: z.string().default(''), basis: z.string().default(''), inspection_date: z.string().nullable().default(null), internal_report: z.string().default(''), conclusion: z.string().default(''), inspector: z.string().default(''), approver: z.string().default('') })
+export const reportSchema = z.object({ packaging: z.string().default(''), batch_number: z.string().default('\\'), basis: z.string().default(''), inspection_date: z.string().nullable().default(null), internal_report: z.string().default(''), conclusion: z.string().default(''), inspector: z.string().default(''), approver: z.string().default('') })
 export const recordSchema = z.object({
   id: z.number(), ledger_id: z.number(), creator_id: z.number(), version: z.number(),
   inspection_enabled: z.boolean().default(true),
@@ -32,7 +32,7 @@ export type Fields = z.infer<typeof fieldsSchema>
 export type Item = z.infer<typeof itemSchema>
 const suggestionSchema = z.object({
   material_name: z.string(), production_dates: z.array(z.string()), specification: z.string(), company_name: z.string(),
-  address: z.string(), contact: z.string(), shelf_life: z.string(),
+  address: z.string(), contact: z.string(), shelf_life: z.string(), expiry_date: z.string().nullable(),
   address_source: z.enum(['', 'supplier', 'manufacturer']), contact_source: z.enum(['', 'supplier', 'manufacturer']),
 }).partial()
 export const jobSchema = z.object({
@@ -50,7 +50,7 @@ export const jobSchema = z.object({
   }).default({ fields: {}, conflicts: {}, sources: [] }),
 })
 export type Job = z.infer<typeof jobSchema>
-export const materialDetailsSchema = fieldsSchema.pick({ specification: true, company_name: true, address: true, contact: true, shelf_life: true, address_source: true, contact_source: true })
+export const materialDetailsSchema = fieldsSchema.pick({ specification: true, company_name: true, address: true, contact: true, shelf_life: true, address_source: true, contact_source: true }).extend({ packaging: z.string().default('') })
 export const materialSchema = materialDetailsSchema.extend({ id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })
 export const schemeSchema = z.object({ id: z.number(), material_id: z.number().nullable(), name: z.string(), items: z.array(itemSchema) })
 export const partnerSchema = z.object({ id: z.number(), name: z.string(), kind: z.enum(['supplier', 'manufacturer']), address: z.string(), contact: z.string() })
@@ -78,6 +78,15 @@ export async function api<T>(path: string, schema: z.ZodType<T>, init: RequestIn
 
 export function json(method: string, body: unknown): RequestInit {
   return { method, body: JSON.stringify(body) }
+}
+
+export async function normalizeShelfLife(shelfLife: string): Promise<string> {
+  const result = await api('/shelf-life/derive', fieldsSchema.pick({ shelf_life: true }), json('POST', { production_dates: [], shelf_life: shelfLife, expiry_date: null }))
+  return result.shelf_life
+}
+
+export function shelfLifeDayNotice(shelfLife: string): string {
+  return /(?:\d+(?:\.\d+)?|[零〇一二三四五六七八九十百千万两]+)\s*(?:天|日)/.test(shelfLife) ? '保质期以天数标注，已保留原文，请人工核对' : ''
 }
 
 export function today() {

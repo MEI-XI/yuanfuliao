@@ -101,6 +101,7 @@ class Material(Base):
     address: Mapped[str] = mapped_column(String(1000), default="")
     contact: Mapped[str] = mapped_column(String(500), default="")
     shelf_life: Mapped[str] = mapped_column(String(200), default="")
+    packaging: Mapped[str] = mapped_column(String(500), default="")
     address_source: Mapped[str] = mapped_column(String(24), default="")
     contact_source: Mapped[str] = mapped_column(String(24), default="")
 
