@@ -9,6 +9,7 @@ import RecycleBin from './RecycleBin.vue'
 import LocalTemplatesPanel from './LocalTemplatesPanel.vue'
 import ReportAttachments from './ReportAttachments.vue'
 import ReportPreview from './ReportPreview.vue'
+import FieldSuggestions from './FieldSuggestions.vue'
 import { readExportTemplate } from './localTemplates'
 import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice } from './api'
 
@@ -50,14 +51,15 @@ function openPreview(recordIds: number[]) { if (recordIds.length) previewIds.val
 const filter = reactive({ text: '', status: '', from: '', to: '', mine: false, creator: 0 })
 const editing = ref<CheckRecord | null>(null)
 function updateAttachmentRecord(metadata: Pick<CheckRecord, 'status' | 'checker_id' | 'checked_at' | 'updated_at'> & { record_version: number }) {
-  if (!editing.value) return
-  Object.assign(editing.value, { version: metadata.record_version, status: metadata.status, checker_id: metadata.checker_id, checked_at: metadata.checked_at, updated_at: metadata.updated_at })
+  const record = editing.value || group.value?.savedRecord
+  if (!record) return
+  Object.assign(record, { version: metadata.record_version, status: metadata.status, checker_id: metadata.checker_id, checked_at: metadata.checked_at, updated_at: metadata.updated_at })
 }
 const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
 const items = ref<Item[]>([])
 type ExpiryDerivation = { inputKey: string | null; generation: number; changed: boolean; autoShelfLife: string | null; autoExpiryDate: string | null; warnings: string[] }
-type DraftGroup = { key: number; expiry: ExpiryDerivation; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
+type DraftGroup = { pendingReports: File[]; savedRecord: CheckRecord | null; key: number; expiry: ExpiryDerivation; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
 let nextGroupKey = 0
 const groups = ref<DraftGroup[]>([])
 const activeGroup = ref(0)
@@ -80,8 +82,8 @@ const showLarge = ref(false)
 const showPhoto = ref(true)
 const suggestedFields = computed(() => Object.entries(group.value?.job?.cloud_fields || {}))
 const localSuggestions = computed(() => Object.entries(group.value?.job?.fields || {}))
-const fieldNames: Record<string, string> = { arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', expiry_date: '保质期至', address_source: '地址来源', contact_source: '联系方式来源' }
-function makeGroup(images: number[] = []): DraftGroup { return { key: ++nextGroupKey, expiry: { inputKey: null, generation: 0, changed: false, autoShelfLife: null, autoExpiryDate: null, warnings: [] }, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
+const fieldNames: Record<string, string> = { packaging: '包装', batch_number: '产品批号', basis: '检验依据', inspection_date: '检验日期', internal_report: '是否提供内检报告', arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', expiry_date: '保质期至', address_source: '地址来源', contact_source: '联系方式来源' }
+function makeGroup(images: number[] = []): DraftGroup { return { pendingReports: [], savedRecord: null, key: ++nextGroupKey, expiry: { inputKey: null, generation: 0, changed: false, autoShelfLife: null, autoExpiryDate: null, warnings: [] }, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
 const recognizing = computed(() => groups.value.some(g => g.requestState === 'submitting' || g.requestState === 'polling'))
 const interrupted = computed(() => groups.value.some(g => g.requestState === 'error'))
 const recognitionLabel = computed(() => {
@@ -134,7 +136,7 @@ const saveSchemeOpen = ref(false)
 const schemeDraft = reactive<{ name: string; material_id: number | null; items: Pick<Item, 'name' | 'standard'>[] }>({ name: '', material_id: null, items: [] })
 const schemeSaveError = ref('')
 function reviewScheme() {
-  Object.assign(schemeDraft, { name: '', material_id: group.value?.materialId || null, items: items.value.map(item => ({ name: item.name, standard: item.standard })) })
+  Object.assign(schemeDraft, { name: report.value.basis, material_id: group.value?.materialId || null, items: items.value.map(item => ({ name: item.name, standard: item.standard })) })
   schemeSaveError.value = ''; saveSchemeOpen.value = true
 }
 async function saveSchemeInfo() {
@@ -150,6 +152,11 @@ async function saveSchemeInfo() {
 }
 const availableSchemes = computed(() => standards.value)
 const maintainedItemKey = ref('')
+function removeInspectionItem(index: number) {
+  const previousNames = items.value.map(item => item.name).filter(Boolean).join('、')
+  items.value.splice(index, 1)
+  if (fields.value.sampling_items === previousNames) fields.value.sampling_items = items.value.map(item => item.name).filter(Boolean).join('、')
+}
 const maintainedItems = computed(() => standards.value.flatMap(scheme => scheme.items.map((item, index) => ({ key: `${scheme.id}:${index}`, label: `${scheme.name} / ${item.name} / ${item.standard}`, item }))))
 function addMaintainedItem() {
   const choice = maintainedItems.value.find(entry => entry.key === maintainedItemKey.value)
@@ -306,9 +313,30 @@ function applyReviewSuggestion(key: string, value: unknown) {
 }
 function applySuggestion(key: string, value: unknown) {
   if (busy.value || batchRetry.value) return
-  const parsed = fieldsSchema.safeParse({ ...fields.value, [key]: value })
-  if (parsed.success) { Object.assign(fields.value, parsed.data); markDirty(key) }
+  if (reportOcrKeys.has(key)) {
+    const parsed = reportSchema.safeParse({ ...report.value, [key]: value })
+    if (parsed.success) { Object.assign(report.value, parsed.data); markDirty('report.' + key) }
+  } else {
+    const normalized = key === 'production_dates' && typeof value === 'string' ? value.split(/[、,，;；]+/).map(part => part.trim().replaceAll('.', '-')) : value
+    const parsed = fieldsSchema.safeParse({ ...fields.value, [key]: normalized })
+    if (parsed.success) { Object.assign(fields.value, parsed.data); markDirty(key) }
+  }
 }
+const reportOcrKeys = new Set(['packaging', 'batch_number', 'basis', 'inspection_date', 'internal_report'])
+function suggestionsFor(key: string): unknown[] {
+  const job = group.value?.job
+  if (!job) return []
+  const current: unknown = Reflect.get(reportOcrKeys.has(key) ? report.value : fields.value, key)
+  const values: unknown[] = [...(job.conflicts[key] || []), ...(job.review_suggestions.conflicts[key] || [])]
+  for (const proposals of [job.fields, job.cloud_fields, job.review_suggestions.fields]) values.push(Reflect.get(proposals, key))
+  const unique = new Map<string, unknown>()
+  for (const value of values) {
+    const display = formatSuggestion(value)
+    if (display && display !== formatSuggestion(current)) unique.set(display, value)
+  }
+  return [...unique.values()]
+}
+function warningsFor(key: string) { return group.value?.job?.cloud_warnings.filter(warning => warning.field === key).map(warning => warning.message) || [] }
 function formatSuggestion(value: unknown) { return Array.isArray(value) ? value.join('、') : String(value ?? '') }
 const editable = computed(() => !editing.value || (editing.value.status !== 'void' && (administrator.value || editing.value.creator_id === user.value?.id)))
 const statusText = { pending: '待核对', checked: '已核对', void: '作废' }
@@ -450,20 +478,43 @@ async function openEditor(record: CheckRecord | null = null) {
   error.value = ''; notice.value = ''; view.value = 'editor'
   })
 }
+async function savePendingReports(entry: DraftGroup): Promise<CheckRecord> {
+  const saved = entry.savedRecord
+  if (!saved) throw new Error('请先保存查验记录')
+  let record: CheckRecord = saved
+  while (entry.pendingReports.length) {
+    const file = entry.pendingReports[0]
+    if (!file) break
+    const body = new FormData()
+    body.append('file', file); body.append('version', String(record.version))
+    try {
+      const result = await api(`/records/${record.id}/reports`, z.object({ record_version: z.number(), status: z.enum(['pending', 'checked', 'void']), checker_id: z.number().nullable(), checked_at: z.string().nullable(), updated_at: z.string() }), { method: 'POST', body })
+      record = { ...record, ...result, version: result.record_version }
+      entry.savedRecord = record
+      entry.pendingReports.shift()
+    } catch (cause) {
+      throw new Error(`记录已保存，报告“${file.name}”上传未完成：${cause instanceof Error ? cause.message : '请重试'}。待上传文件已保留，再次保存不会重复创建记录。`)
+    }
+  }
+  return record
+}
 async function save(check: boolean) {
   await perform(async () => {
     if (!ledger.value) return
     const savedLedgerId = ledger.value.id
-    const savedRecord = editing.value
+    const editorRecord = editing.value
     const savedGroup = group.value
     if (!savedGroup) return
+    const savedRecord = editorRecord || savedGroup.savedRecord
     if (savedGroup.expiry.changed) await deriveExpiry(savedGroup)
     const body = { inspection_enabled: savedGroup.inspectionEnabled, fields: { ...savedGroup.fields, arrival_date: savedGroup.fields.arrival_date || null, expiry_date: savedGroup.fields.expiry_date || null }, report: { ...savedGroup.report, inspection_date: savedGroup.report.inspection_date || null }, items: savedGroup.items, image_ids: savedGroup.images, recognition_job_id: savedGroup.jobId }
-    const record = savedRecord
+    let record = savedRecord
       ? await api(`/records/${savedRecord.id}`, recordSchema, json('PATCH', { ...body, version: savedRecord.version, ...(savedGroup.materialChanged ? { material_id: savedGroup.materialId } : {}), ...(savedGroup.schemeChanged ? { scheme_id: savedGroup.schemeId } : {}) }))
       : await api(`/ledgers/${savedLedgerId}/records`, recordSchema, json('POST', { ...body, material_id: savedGroup.materialId, scheme_id: savedGroup.schemeId }))
-    if (check) await api(`/records/${record.id}/check`, recordSchema, json('POST', { version: record.version }))
-    if (!groups.value.includes(savedGroup) || editing.value !== savedRecord) { notice.value = check ? '记录已保存并核对' : '记录已保存，待核对'; return }
+    savedGroup.savedRecord = record
+    record = await savePendingReports(savedGroup)
+    if (check) { record = await api(`/records/${record.id}/check`, recordSchema, json('POST', { version: record.version })); savedGroup.savedRecord = record }
+    if (!groups.value.includes(savedGroup) || editing.value !== editorRecord) { notice.value = check ? '记录已保存并核对' : '记录已保存，待核对'; return }
     editing.value = record
     if (groups.value.length > 1) {
       const selectedGroup = group.value
@@ -491,10 +542,17 @@ async function saveBatch() {
     if (!batchRetry.value) {
       const savedGroups = selectedGroups.value
       await Promise.all(savedGroups.filter(entry => entry.expiry.changed).map(entry => deriveExpiry(entry)))
+      for (const entry of savedGroups) if (entry.savedRecord) {
+        entry.savedRecord = await api(`/records/${entry.savedRecord.id}`, recordSchema, json('PATCH', {
+          version: entry.savedRecord.version, inspection_enabled: entry.inspectionEnabled,
+          fields: entry.fields, report: entry.report, items: entry.items, image_ids: entry.images,
+          ...(entry.materialChanged ? { material_id: entry.materialId } : {}), ...(entry.schemeChanged ? { scheme_id: entry.schemeId } : {}),
+        }))
+      }
       batchPendingKeys.value = savedGroups.map(entry => entry.key)
       batchRetry.value = JSON.stringify({
-      request_id: newBatchId(), mark_checked: markBatchChecked.value,
-      records: savedGroups.map(entry => ({
+      request_id: newBatchId(), mark_checked: markBatchChecked.value && !savedGroups.some(entry => entry.pendingReports.length),
+      records: savedGroups.filter(entry => !entry.savedRecord).map(entry => ({
         inspection_enabled: entry.inspectionEnabled,
         fields: { ...entry.fields, arrival_date: entry.fields.arrival_date || null, expiry_date: entry.fields.expiry_date || null },
         report: { ...entry.report, inspection_date: entry.report.inspection_date || null },
@@ -503,19 +561,27 @@ async function saveBatch() {
       })),
       })
     }
-    let saved: CheckRecord[]
+    const submittedGroups = batchPendingKeys.value.flatMap(key => groups.value.filter(entry => entry.key === key))
+    const newGroups = submittedGroups.filter(entry => !entry.savedRecord)
     try {
-      saved = await api(`/ledgers/${savedLedgerId}/records/batch`, z.array(recordSchema), { method: 'POST', body: batchRetry.value })
+      if (newGroups.length) {
+        const created = await api(`/ledgers/${savedLedgerId}/records/batch`, z.array(recordSchema), { method: 'POST', body: batchRetry.value })
+        newGroups.forEach((entry, index) => { entry.savedRecord = created[index] || null })
+      }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status < 500 && cause.status !== 408) { batchRetry.value = null; batchPendingKeys.value = []; throw cause }
       throw new Error('批量保存结果尚未确认，请点击重试；同一批次不会重复保存。')
+    }
+    for (const entry of submittedGroups) {
+      const record = await savePendingReports(entry)
+      if (markBatchChecked.value && record.status !== 'checked') entry.savedRecord = await api(`/records/${record.id}/check`, recordSchema, json('POST', { version: record.version }))
     }
     const currentKey = group.value?.key
     for (const entry of groups.value) if (batchPendingKeys.value.includes(entry.key)) entry.generation++
     groups.value = groups.value.filter(entry => !batchPendingKeys.value.includes(entry.key))
     selectedGroupKeys.value = selectedGroupKeys.value.filter(key => !batchPendingKeys.value.includes(key))
     batchRetry.value = null; batchPendingKeys.value = []; editing.value = null
-    notice.value = `已保存 ${saved.length} 条记录${markBatchChecked.value ? '，并标记为已核对' : '，待核对'}`
+    notice.value = `已保存 ${submittedGroups.length} 条记录${markBatchChecked.value ? '，并标记为已核对' : '，待核对'}`
     if (groups.value.length) {
       switchGroup(Math.max(0, groups.value.findIndex(entry => entry.key === currentKey)))
       notice.value += `；还剩 ${groups.value.length} 条未保存`
@@ -540,6 +606,7 @@ function mergeGroups(index: number, targetIndex: number) {
   if (busy.value || batchRetry.value) return
   const current = groups.value[index]; const previous = groups.value[targetIndex]
   if (!current || !previous || current === previous) return
+  if (current.savedRecord || previous.savedRecord) { error.value = '这组记录已保存，请先完成附件上传；已保存记录不能合并。'; return }
   const results = (entry: DraftGroup) => entry.items.filter(i => i.result || i.conclusion).map(i => [i.name, i.result, i.conclusion])
   if (results(current).length && results(previous).length && JSON.stringify(results(current)) !== JSON.stringify(results(previous))) {
     error.value = '两组检验结果不同，请分别保存记录'; return
@@ -547,7 +614,7 @@ function mergeGroups(index: number, targetIndex: number) {
   const hasSourceContent = current.dirty.size || current.items.some(item => item.result || item.conclusion) || Object.entries(current.fields).some(([key, value]) => key !== 'arrival_date' && key !== 'production_dates' && !!value && JSON.stringify(value) !== JSON.stringify(Reflect.get(previous.fields, key)))
   if (hasSourceContent && !window.confirm(`合并到记录 ${targetIndex + 1}：保留目标组已填内容，用来源组补充空白字段，并汇总图片及生产日期。接收总数量请合并后核对。继续吗？`)) return
   current.generation++
-  previous.images.push(...current.images); invalidateRecognition(previous)
+  previous.pendingReports.push(...current.pendingReports); previous.images.push(...current.images); invalidateRecognition(previous)
   for (const key of Object.keys(current.fields)) {
     if (key !== 'production_dates' && !Reflect.get(previous.fields, key)) Reflect.set(previous.fields, key, Reflect.get(current.fields, key))
   }
@@ -611,6 +678,14 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
       for (const proposals of sources) for (const [key, value] of Object.entries(proposals)) {
         if (value === null || value === '' || (Array.isArray(value) && !value.length)) continue
         if (key.endsWith('_source')) continue
+        if (reportOcrKeys.has(key)) {
+          const existing: unknown = Reflect.get(current.report, key)
+          if (!current.dirty.has('report.' + key) && !job.conflicts[key] && (!existing || (!editing.value && !current.savedRecord && key === 'batch_number' && existing === '\\'))) {
+            const parsed = reportSchema.safeParse({ ...current.report, [key]: value })
+            if (parsed.success) Object.assign(current.report, parsed.data)
+          }
+          continue
+        }
         const existing: unknown = Reflect.get(current.fields, key)
         const paired = key === 'address' || key === 'contact'
         const sourceKey = key + '_source'
@@ -734,13 +809,13 @@ async function download(kind: 'xlsx' | 'docx') {
           <div v-if="suggestedFields.length"><h3>云端建议</h3><p class="muted">按需填入，不自动覆盖人工修改。</p><div v-for="[key, value] in suggestedFields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applySuggestion(key, value)">填入</button></div></div>
         </div>
       </aside>
-        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><template v-for="field in textFields" :key="field.key"><label>{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)" @blur="field.key === 'shelf_life' && normalizeEntryShelfLife()"></label><label v-if="field.key === 'shelf_life'">保质期至<input v-model="fields.expiry_date" type="date" @input="markDirty('expiry_date')"></label></template><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div><p v-for="warning in expiryWarnings" :key="warning" class="notice" role="status">{{ warning }}</p></section>
+        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><FieldSuggestions label="到货日期" :values="suggestionsFor('arrival_date')" :warnings="warningsFor('arrival_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('arrival_date', $event)" /><small>默认录入日期，可修改或清空</small></label><template v-for="field in textFields" :key="field.key"><label>{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)" @blur="field.key === 'shelf_life' && normalizeEntryShelfLife()" :aria-label="field.label"><FieldSuggestions :label="field.label" :values="suggestionsFor(field.key)" :warnings="warningsFor(field.key)" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion(field.key, $event)" /></label><label v-if="field.key === 'shelf_life'">保质期至<input v-model="fields.expiry_date" type="date" @input="markDirty('expiry_date')" aria-label="保质期至"><FieldSuggestions label="保质期至" :values="suggestionsFor('expiry_date')" :warnings="warningsFor('expiry_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('expiry_date', $event)" /></label></template><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔" aria-label="生产日期"><FieldSuggestions label="生产日期" :values="suggestionsFor('production_dates')" :warnings="warningsFor('production_dates')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('production_dates', $event)" /></label></div><p v-for="warning in expiryWarnings" :key="warning" class="notice" role="status">{{ warning }}</p></section>
           <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
-          <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates"></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写"></textarea></label><label class="wide">抽检项目<input v-model="fields.sampling_items"></label><label class="wide">备注<textarea v-model="fields.notes" rows="2"></textarea></label></div></section>
+          <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates" aria-label="随车证件"><FieldSuggestions label="随车证件" :values="suggestionsFor('certificates')" :warnings="warningsFor('certificates')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('certificates', $event)" /></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写" aria-label="感官检验"></textarea><FieldSuggestions label="感官检验" :values="suggestionsFor('sensory')" :warnings="warningsFor('sensory')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('sensory', $event)" /></label><label class="wide">抽检项目<input v-model="fields.sampling_items" aria-label="抽检项目"><FieldSuggestions label="抽检项目" :values="suggestionsFor('sampling_items')" :warnings="warningsFor('sampling_items')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('sampling_items', $event)" /></label><label class="wide">备注<textarea v-model="fields.notes" rows="2" aria-label="备注"></textarea><FieldSuggestions label="备注" :values="suggestionsFor('notes')" :warnings="warningsFor('notes')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('notes', $event)" /></label></div></section>
           <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
-          <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><button v-if="administrator" type="button" @click="reviewScheme">保存为检验标准方案</button><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
-          <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging" @input="markDirty('report.packaging')"></label><label>产品批号<input v-model="report.batch_number"></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date"></label><label>是否提供内检报告<select v-model="report.internal_report"><option value="">留空</option><option>是</option><option>否</option></select></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
-        </fieldset><ReportAttachments :record-id="editing?.id || null" :record-version="editing?.version || null" :editable="editable && !busy && !batchRetry" @record-changed="updateAttachmentRecord" /></div></div>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><button v-if="administrator" type="button" @click="reviewScheme">保存为检验标准方案</button><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论每次手动填写，可以留空。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><label>检验结果<input v-model="item.result"></label><label>判定结论<input v-model="item.conclusion"></label><button type="button" class="text-button remove-inspection" :aria-label="`移除检验项目 ${item.name || index + 1}`" @click="removeInspectionItem(index)">移除项目</button></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' })">添加检验项目</button></section>
+          <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging" @input="markDirty('report.packaging')" aria-label="包装"><FieldSuggestions label="包装" :values="suggestionsFor('packaging')" :warnings="warningsFor('packaging')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('packaging', $event)" /></label><label>产品批号<input v-model="report.batch_number" aria-label="产品批号" @input="markDirty('report.batch_number')"><FieldSuggestions label="产品批号" :values="suggestionsFor('batch_number')" :warnings="warningsFor('batch_number')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('batch_number', $event)" /></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><FieldSuggestions label="检验依据" :values="suggestionsFor('basis')" :warnings="warningsFor('basis')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('basis', $event)" /><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date" aria-label="检验日期" @input="markDirty('report.inspection_date')"><FieldSuggestions label="检验日期" :values="suggestionsFor('inspection_date')" :warnings="warningsFor('inspection_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('inspection_date', $event)" /></label><label>是否提供内检报告<select v-model="report.internal_report" aria-label="是否提供内检报告" @change="markDirty('report.internal_report')"><option value="">留空</option><option>是</option><option>否</option></select><FieldSuggestions label="是否提供内检报告" :values="suggestionsFor('internal_report')" :warnings="warningsFor('internal_report')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('internal_report', $event)" /></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
+        </fieldset><ReportAttachments v-if="group" :key="group.key" :pending-files="group.pendingReports" @files-changed="group.pendingReports = $event" :record-id="editing?.id || group.savedRecord?.id || null" :record-version="editing?.version || group.savedRecord?.version || null" :editable="editable && !busy && (!batchRetry || !!group.savedRecord)" @record-changed="updateAttachmentRecord" /></div></div>
       <footer class="savebar save-bar">
         <div class="save-summary"><span>{{ editable ? '业务字段允许留空' : '当前记录只读' }}</span><template v-if="editable && !editing && mode === 'batch'"><span>共 {{ groups.length }} 条，已选 {{ selectedGroups.length }} 条</span><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = groups.map(entry => entry.key)">全选分组</button><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = []">全部清空</button></template></div>
         <div class="save-actions"><button :disabled="busy || !!batchRetry" @click="leaveEditor">{{ editorReturn === 'recycle' ? '返回回收站' : '返回台账' }}</button>

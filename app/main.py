@@ -624,6 +624,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def job_view(job, session):
         from app.review_feedback import checked_suggestions
         result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+        result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
+        result['conflicts'] = {key: list(values) for key, values in result['conflicts'].items()}
+        for key, values in result['cloud_fields'].get('_candidates', {}).items():
+            result['conflicts'][key] = list(dict.fromkeys(result['conflicts'].get(key, []) + values))
+        result['cloud_fields'] = {key: value for key, value in result['cloud_fields'].items() if not key.startswith('_')}
         result['queue_ahead'] = session.scalar(select(func.count()).select_from(RecognitionJob).where(
             RecognitionJob.id < job.id, RecognitionJob.local_status.in_(['queued', 'running']))) if job.local_status == 'queued' else 0
         result['review_suggestions'] = checked_suggestions(job, session)

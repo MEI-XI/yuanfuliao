@@ -34,6 +34,8 @@ const suggestionSchema = z.object({
   material_name: z.string(), production_dates: z.array(z.string()), specification: z.string(), company_name: z.string(),
   address: z.string(), contact: z.string(), shelf_life: z.string(), expiry_date: z.string().nullable(),
   address_source: z.enum(['', 'supplier', 'manufacturer']), contact_source: z.enum(['', 'supplier', 'manufacturer']),
+  packaging: z.string(), batch_number: z.string(), basis: z.string(), inspection_date: z.string().nullable(), internal_report: z.string(),
+  arrival_date: z.string().nullable(), received_quantity: z.string(), certificates: z.string(), sensory: z.string(), sampling_items: z.string(), notes: z.string(),
 }).partial()
 export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
@@ -42,6 +44,7 @@ export const jobSchema = z.object({
   evidence: z.array(z.object({ texts: z.array(z.string()), boxes: z.array(z.unknown()),
     supplements: z.array(z.object({ texts: z.array(z.string()), kind: z.string() })).default([]) })),
   conflicts: z.record(z.string(), z.array(z.string())), error: z.string(), cloud_error: z.string(),
+  cloud_warnings: z.array(z.object({ field: z.string(), message: z.string() })).default([]),
   queue_ahead: z.number().default(0),
   review_suggestions: z.object({
     fields: suggestionSchema,
