@@ -8,7 +8,7 @@ import BatchGroups from './BatchGroups.vue'
 import RecycleBin from './RecycleBin.vue'
 import LocalTemplatesPanel from './LocalTemplatesPanel.vue'
 import { readExportTemplate } from './localTemplates'
-import { materialSchema, schemeSchema, partnerSchema } from './api'
+import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema } from './api'
 
 const user = ref<User | null>(null)
 const administrator = computed(() => user.value?.role === 'admin' || user.value?.role === 'superadmin')
@@ -91,6 +91,26 @@ const catalog = ref<z.infer<typeof materialSchema>[]>([])
 const standards = ref<z.infer<typeof schemeSchema>[]>([])
 const partners = ref<z.infer<typeof partnerSchema>[]>([])
 const partnerId = ref(0)
+const saveMaterialOpen = ref(false)
+const materialDraft = reactive({ name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
+const materialSaveError = ref('')
+function reviewMaterial() {
+  const selected = catalog.value.find(entry => entry.id === group.value?.materialId)
+  const matchesSelected = selected && fields.value.material_name === [selected.name, selected.model].filter(Boolean).join(' ')
+  Object.assign(materialDraft, { name: matchesSelected ? selected.name : fields.value.material_name, model: matchesSelected ? selected.model : '', aliases: selected?.aliases || '', ...materialDetailsSchema.parse(fields.value) })
+  materialSaveError.value = ''; saveMaterialOpen.value = true
+}
+async function saveMaterialInfo() {
+  if (!administrator.value || busy.value) return
+  busy.value = true; materialSaveError.value = ''
+  try {
+    const saved = await api('/materials', materialSchema, json('POST', materialDraft))
+    catalog.value.push(saved)
+    saveMaterialOpen.value = false
+    notice.value = '已新增共享物料；本次查验记录仍需保存'
+  } catch (problem) { materialSaveError.value = problem instanceof Error ? problem.message : '物料保存失败' }
+  finally { busy.value = false }
+}
 const availableSchemes = computed(() => standards.value)
 const maintainedItemKey = ref('')
 const maintainedItems = computed(() => standards.value.flatMap(scheme => scheme.items.map((item, index) => ({ key: `${scheme.id}:${index}`, label: `${scheme.name} / ${item.name} / ${item.standard}`, item }))))
@@ -126,7 +146,17 @@ function chooseMaterial(event: Event) {
   group.value.materialId = Number(event.target.value) || null
   group.value.materialChanged = true
   const material = catalog.value.find(m => m.id === group.value?.materialId)
-  if (material) { fields.value.material_name = [material.name, material.model].filter(Boolean).join(' '); markDirty('material_name') }
+  if (material) {
+    fields.value.material_name = [material.name, material.model].filter(Boolean).join(' '); markDirty('material_name')
+    for (const key of ['specification', 'company_name', 'address', 'contact', 'shelf_life'] as const) {
+      if (!material[key]) continue
+      fields.value[key] = material[key]; markDirty(key)
+      if (key === 'address' || key === 'contact') {
+        const sourceKey = key === 'address' ? 'address_source' : 'contact_source'
+        fields.value[sourceKey] = material[sourceKey]; markDirty(sourceKey)
+      }
+    }
+  }
   const choices = standards.value.filter(s => s.material_id === group.value?.materialId)
   if (group.value.inspectionEnabled && !items.value.length && !group.value.schemeId && choices.length === 1) replaceScheme(choices[0]?.id || null)
 }
@@ -580,7 +610,7 @@ async function download(kind: 'xlsx' | 'docx') {
           <div v-if="suggestedFields.length"><h3>云端建议</h3><p class="muted">按需填入，不自动覆盖人工修改。</p><div v-for="[key, value] in suggestedFields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applySuggestion(key, value)">填入</button></div></div>
         </div>
       </aside>
-        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><label v-for="field in textFields" :key="field.key">{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)"></label><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div></section>
+        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><small>默认录入日期，可修改或清空</small></label><label v-for="field in textFields" :key="field.key">{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)"></label><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔"></label></div></section>
           <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
           <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><label class="wide">随车证件<input v-model="fields.certificates"></label><label class="wide">感官检验<textarea v-model="fields.sensory" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写"></textarea></label><label class="wide">抽检项目<input v-model="fields.sampling_items"></label><label class="wide">备注<textarea v-model="fields.notes" rows="2"></textarea></label></div></section>
           <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
@@ -595,6 +625,7 @@ async function download(kind: 'xlsx' | 'docx') {
         </div>
       </footer>
     </main>
+    <el-dialog v-model="saveMaterialOpen" title="保存为物料信息" width="min(720px, 95vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy"><form @submit.prevent="saveMaterialInfo"><fieldset :disabled="busy"><p class="muted">核对后新增一条共享物料，不覆盖已有物料。只保存共享物料资料，本次查验记录仍需另行保存。</p><p v-if="materialSaveError" role="alert" class="error">{{ materialSaveError }}</p><div class="field-grid"><label>物料名称<input v-model="materialDraft.name" required></label><label>型号<input v-model="materialDraft.model"></label><label>常用别名<input v-model="materialDraft.aliases"></label><label>规格<input v-model="materialDraft.specification"></label><label>供应商或生产商<input v-model="materialDraft.company_name"></label><label>地址<input v-model="materialDraft.address"></label><label>联系方式<input v-model="materialDraft.contact"></label><label>保质期<input v-model="materialDraft.shelf_life"></label><label>地址来源<select v-model="materialDraft.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="materialDraft.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div><div class="button-row"><button type="submit" class="primary">确认新增物料</button><button type="button" @click="saveMaterialOpen = false">取消</button></div></fieldset></form></el-dialog>
     <el-dialog v-model="createLedger" title="新建公司台账" width="min(480px, 92vw)"><form @submit.prevent="addLedger"><label>公司台账名称<input v-model="ledgerName" maxlength="31" required></label><p class="muted">将用作 Excel 工作表名称，最多31个字符。</p><button class="primary" :disabled="busy">建立台账</button></form></el-dialog>
     <el-dialog v-model="historyOpen" title="修改历史" width="min(850px, 95vw)"><article v-for="entry in histories" :key="entry.at" class="history-entry"><h3>{{ actionNames[entry.action] || entry.action }}</h3><p class="muted">{{ people.find(p => p.id === entry.actor_id)?.username }} · {{ new Date(entry.at).toLocaleString('zh-CN') }} · 版本 {{ entry.snapshot.version }}</p><details><summary>查看当时内容</summary><dl><template v-for="(value, key) in entry.snapshot.fields" :key="key"><dt>{{ fieldNames[key] || key }}</dt><dd>{{ formatSuggestion(value) || '（空白）' }}</dd></template></dl><div v-for="(item, index) in entry.snapshot.items" :key="index">{{ item.name }} / {{ item.standard }} / {{ item.result }} / {{ item.conclusion }}</div></details></article><button @click="historyOpen = false">关闭历史</button></el-dialog><el-dialog v-model="showLarge" title="包装原图" width="min(1100px, 96vw)"><img v-if="selectedImage" :src="`/api/images/${selectedImage}`" alt="包装图片放大预览" class="large-photo"></el-dialog>
   </div>

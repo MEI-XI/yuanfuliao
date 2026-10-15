@@ -124,6 +124,13 @@ class MaterialInput(Input):
     name: str = Field(min_length=1, max_length=200)
     model: str = ""
     aliases: str = ""
+    specification: str = Field(default="", max_length=500)
+    company_name: str = Field(default="", max_length=200)
+    address: str = Field(default="", max_length=1000)
+    contact: str = Field(default="", max_length=500)
+    shelf_life: str = Field(default="", max_length=200)
+    address_source: Literal["", "supplier", "manufacturer"] = ""
+    contact_source: Literal["", "supplier", "manufacturer"] = ""
 
 
 class StandardItem(Input):

@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
-import { api, json, raw, userSchema, ledgerSchema, materialSchema, schemeSchema, partnerSchema, type User, type Ledger } from './api'
+import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, type User, type Ledger } from './api'
 const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
 const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
@@ -12,7 +12,7 @@ const tabs = computed(() => [{ key: 'materials', name: '物料与检验标准' }
 const error = ref(''), notice = ref(''), busy = ref(false)
 const users = ref<User[]>([]), ledgers = ref<Ledger[]>([])
 const materials = ref<z.infer<typeof materialSchema>[]>([]), schemes = ref<z.infer<typeof schemeSchema>[]>([]), partners = ref<z.infer<typeof partnerSchema>[]>([])
-const material = reactive({ id: 0, name: '', model: '', aliases: '' })
+const material = reactive({ id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
 const scheme = reactive<{ id: number; material_id: number | null; name: string; items: { name: string; standard: string; unit: string }[] }>({ id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
 const partner = reactive<{ id: number; name: string; kind: 'supplier' | 'manufacturer'; address: string; contact: string }>({ id: 0, name: '', kind: 'supplier', address: '', contact: '' })
 const account = reactive<User & { password: string }>({ id: 0, username: '', password: '', role: 'user', active: true })
@@ -30,7 +30,7 @@ async function showEditor(kind: EditorKind, originalName?: string) {
   await nextTick(); formHeading.value?.focus(); formHeading.value?.scrollIntoView({ block: 'start' })
 }
 function openMaterial(entry?: z.infer<typeof materialSchema>) {
-  Object.assign(material, entry || { id: 0, name: '', model: '', aliases: '' })
+  Object.assign(material, entry || { id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
   void showEditor('material', entry?.name)
 }
 function openScheme(entry?: z.infer<typeof schemeSchema>) {
@@ -58,7 +58,7 @@ async function openCloud() {
 function closeEditor() {
   credential.value = { kind: 'hidden' }
   editor.value = null
-  Object.assign(material, { id: 0, name: '', model: '', aliases: '' })
+  Object.assign(material, { id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
   Object.assign(scheme, { id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
   Object.assign(partner, { id: 0, name: '', kind: 'supplier', address: '', contact: '' })
   Object.assign(account, { id: 0, username: '', password: '', role: 'user', active: true })
@@ -81,7 +81,7 @@ async function deleteEntry(resource: 'materials' | 'schemes' | 'partners' | 'use
 }
 function deleteMaterial(entry: z.infer<typeof materialSchema>) {
   return deleteEntry('materials', entry.id, [entry.name, entry.model].filter(Boolean).join(' '), () => {
-    if (material.id === entry.id) Object.assign(material, { id: 0, name: '', model: '', aliases: '' })
+    if (material.id === entry.id) Object.assign(material, { id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
     if (scheme.material_id === entry.id) scheme.material_id = null
   })
 }
@@ -152,7 +152,7 @@ async function testCloud() {
     <section v-if="editor" class="admin-card admin-form" role="region" :aria-label="editor.title">
       <div class="module-heading"><h2 ref="formHeading" tabindex="-1">{{ editor.title }}</h2><button :disabled="busy" @click="closeEditor">返回列表</button></div>
       <form v-if="editor.kind === 'material'" @submit.prevent="saveMaterial"><fieldset :disabled="busy">
-        <div class="field-grid"><label>物料名称<input v-model="material.name" required></label><label>型号<input v-model="material.model"></label><label class="wide">常用别名<input v-model="material.aliases"></label></div>
+        <div class="field-grid"><label>物料名称<input v-model="material.name" required></label><label>型号<input v-model="material.model"></label><label class="wide">常用别名<input v-model="material.aliases"></label><label>规格<input v-model="material.specification"></label><label>供应商或生产商<input v-model="material.company_name"></label><label>地址<input v-model="material.address"></label><label>联系方式<input v-model="material.contact"></label><label>保质期<input v-model="material.shelf_life"></label><label>地址来源<select v-model="material.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="material.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div>
         <div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '创建物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'scheme'" @submit.prevent="saveScheme"><fieldset :disabled="busy">

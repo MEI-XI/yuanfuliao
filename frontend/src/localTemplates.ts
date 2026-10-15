@@ -23,7 +23,9 @@ const folderSchema = z.object({
   handle: z.custom<FileSystemDirectoryHandle>(value => typeof FileSystemDirectoryHandle !== 'undefined' && value instanceof FileSystemDirectoryHandle),
   baselines: z.object({ xlsx: z.string(), docx: z.string() }),
 })
-const settingSchema = z.object({ activeId: z.string().nullable(), folders: z.array(folderSchema) })
+const snapshotFileSchema = z.object({ base64: z.string(), baseline: z.string() })
+const snapshotSchema = z.object({ name: z.string(), files: z.object({ xlsx: snapshotFileSchema.nullable(), docx: snapshotFileSchema.nullable() }) })
+const settingSchema = z.object({ activeId: z.string().nullable(), folders: z.array(folderSchema), snapshot: snapshotSchema.nullable().default(null), activeSnapshot: z.boolean().default(false) })
 type Folder = z.infer<typeof folderSchema>
 type Setting = z.infer<typeof settingSchema>
 
@@ -48,7 +50,7 @@ async function loadSetting(userId: number): Promise<Setting> {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(new Error('无法读取个人模板设置，请重新打开“我的模板”。'))
     })
-    if (value === undefined) return { activeId: null, folders: [] }
+    if (value === undefined) return { activeId: null, folders: [], snapshot: null, activeSnapshot: false }
     return settingSchema.parse(value)
   } finally { database.close() }
 }
@@ -74,6 +76,66 @@ function activeFolder(setting: Setting): Folder | null {
 
 export async function selectedTemplateDirectory(userId: number): Promise<FileSystemDirectoryHandle | null> {
   return activeFolder(await loadSetting(userId))?.handle || null
+}
+
+export type TemplateSource = { kind: 'server' } | { kind: 'directory'; handle: FileSystemDirectoryHandle } | { kind: 'snapshot'; name: string; importedKinds: TemplateKind[] }
+
+export async function selectedTemplateSource(userId: number): Promise<TemplateSource> {
+  const setting = await loadSetting(userId)
+  if (setting.activeSnapshot && setting.snapshot) {
+    const snapshot = setting.snapshot
+    return { kind: 'snapshot', name: snapshot.name, importedKinds: templateKinds.filter(kind => snapshot.files[kind] !== null) }
+  }
+  const folder = activeFolder(setting)
+  return folder ? { kind: 'directory', handle: folder.handle } : { kind: 'server' }
+}
+
+function toBase64(bytes: ArrayBuffer): string {
+  let binary = ''
+  const values = new Uint8Array(bytes)
+  for (let offset = 0; offset < values.length; offset += 0x8000) {
+    binary += String.fromCharCode(...values.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+/** File inputs grant one-time reads, never ongoing access to the selected folder. */
+export async function importTemplateDirectory(userId: number, files: File[]): Promise<void> {
+  const first = files[0]
+  if (!first) return
+  const name = first.webkitRelativePath.split('/')[0] || '个人模板'
+  const selected: Record<TemplateKind, File | null> = { xlsx: null, docx: null }
+  for (const file of files) {
+    for (const kind of templateKinds) {
+      if (file.name !== templateNames[kind]) continue
+      if (selected[kind]) throw new Error(`文件夹中有重名的 ${templateNames[kind]}，请只保留一份后重新选择。`)
+      if (file.size > maxTemplateBytes) throw new Error(`${templateNames[kind]} 超过 10 MiB，请缩小文件后重新选择。`)
+      selected[kind] = file
+    }
+  }
+  const setting = await loadSetting(userId)
+  const snapshot: z.infer<typeof snapshotSchema> = { name, files: { xlsx: null, docx: null } }
+  for (const kind of templateKinds) {
+    const file = selected[kind]
+    if (!file) continue
+    const base64 = toBase64(await file.arrayBuffer())
+    const previous = setting.snapshot?.name === name ? setting.snapshot.files[kind] : null
+    const currentDefault = toBase64(await (await raw(`/templates/${kind}`)).arrayBuffer())
+    const baseline = base64 === currentDefault ? currentDefault : previous?.baseline || currentDefault
+    snapshot.files[kind] = { base64, baseline }
+  }
+  setting.activeId = null
+  setting.snapshot = snapshot
+  setting.activeSnapshot = true
+  await saveSetting(userId, setting)
+}
+
+export async function downloadDefaultTemplate(kind: TemplateKind): Promise<void> {
+  const url = URL.createObjectURL(await (await raw(`/templates/${kind}`)).blob())
+  const link = document.createElement('a')
+  link.href = url; link.download = templateNames[kind]
+  document.body.append(link); link.click(); link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 async function requirePermission(handle: FileSystemDirectoryHandle, mode: PermissionMode): Promise<void> {
@@ -129,6 +191,7 @@ export async function chooseTemplateDirectory(userId: number, startIn: FileSyste
   const folder: Folder = { id: previous?.id || crypto.randomUUID(), handle: directory, baselines }
   setting.folders = [...setting.folders.filter(entry => entry.id !== folder.id), folder]
   setting.activeId = folder.id
+  setting.activeSnapshot = false
   await saveSetting(userId, setting)
   return directory
 }
@@ -136,12 +199,18 @@ export async function chooseTemplateDirectory(userId: number, startIn: FileSyste
 export async function useServerTemplates(userId: number): Promise<void> {
   const setting = await loadSetting(userId)
   setting.activeId = null
+  setting.activeSnapshot = false
   await saveSetting(userId, setting)
 }
 
 /** Call from the export button: permission requests must retain user activation. */
 export async function readExportTemplate(userId: number, kind: TemplateKind): Promise<string | null> {
-  const folder = activeFolder(await loadSetting(userId))
+  const setting = await loadSetting(userId)
+  if (setting.activeSnapshot && setting.snapshot) {
+    const file = setting.snapshot.files[kind]
+    return file && file.base64 !== file.baseline ? file.base64 : null
+  }
+  const folder = activeFolder(setting)
   if (!folder) return null
   await requirePermission(folder.handle, 'read')
   try {
@@ -151,12 +220,7 @@ export async function readExportTemplate(userId: number, kind: TemplateKind): Pr
     if (file.size > maxTemplateBytes) throw new Error(`${templateNames[kind]} 超过 10 MiB，请缩小文件，或在“我的模板”选择服务器默认模板。`)
     const bytes = await file.arrayBuffer()
     if (await digest(bytes) === folder.baselines[kind]) return null
-    let binary = ''
-    const values = new Uint8Array(bytes)
-    for (let offset = 0; offset < values.length; offset += 0x8000) {
-      binary += String.fromCharCode(...values.subarray(offset, offset + 0x8000))
-    }
-    return btoa(binary)
+    return toBase64(bytes)
   } catch (error) {
     if (error instanceof DOMException) throw new Error(permissionMessage)
     throw error

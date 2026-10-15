@@ -50,7 +50,8 @@ export const jobSchema = z.object({
   }).default({ fields: {}, conflicts: {}, sources: [] }),
 })
 export type Job = z.infer<typeof jobSchema>
-export const materialSchema = z.object({ id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })
+export const materialDetailsSchema = fieldsSchema.pick({ specification: true, company_name: true, address: true, contact: true, shelf_life: true, address_source: true, contact_source: true })
+export const materialSchema = materialDetailsSchema.extend({ id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })
 export const schemeSchema = z.object({ id: z.number(), material_id: z.number().nullable(), name: z.string(), items: z.array(itemSchema) })
 export const partnerSchema = z.object({ id: z.number(), name: z.string(), kind: z.enum(['supplier', 'manufacturer']), address: z.string(), contact: z.string() })
 

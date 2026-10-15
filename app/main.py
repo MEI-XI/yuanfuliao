@@ -425,7 +425,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/materials")
     def materials(user: User = Depends(current_user), session: Session = Depends(db)):
-        return [{"id": m.id, "name": m.name, "model": m.model, "aliases": m.aliases}
+        return [{"id": m.id, **{field: getattr(m, field) for field in MaterialInput.model_fields}}
                 for m in session.scalars(select(Material).order_by(Material.id))]
 
     @app.post("/api/materials", status_code=201)

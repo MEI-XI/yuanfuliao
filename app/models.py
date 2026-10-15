@@ -96,6 +96,13 @@ class Material(Base):
     name: Mapped[str] = mapped_column(String(200))
     model: Mapped[str] = mapped_column(String(200), default="")
     aliases: Mapped[str] = mapped_column(String(500), default="")
+    specification: Mapped[str] = mapped_column(String(500), default="")
+    company_name: Mapped[str] = mapped_column(String(200), default="")
+    address: Mapped[str] = mapped_column(String(1000), default="")
+    contact: Mapped[str] = mapped_column(String(500), default="")
+    shelf_life: Mapped[str] = mapped_column(String(200), default="")
+    address_source: Mapped[str] = mapped_column(String(24), default="")
+    contact_source: Mapped[str] = mapped_column(String(24), default="")
 
 
 class Scheme(Base):
