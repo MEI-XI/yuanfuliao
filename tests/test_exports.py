@@ -44,10 +44,41 @@ def test_excel_preserves_13_columns_company_sheets_blanks_and_manufacturer_sourc
     sheet = workbook["青山科技"]
     assert sheet.max_column == 13
     assert [sheet.cell(3, col).value for col in range(1, 10)] == [
-        None, "甘氨酸", "2026.01.14\n2026.01.15", None, "甲商行", "生产商：乙工厂地址", "生产商：0311-12345678", None, None
+        None, "甘氨酸", "2026.01.14、2026.01.15", None, "甲商行", "生产商：乙工厂地址", "生产商：0311-12345678", None, None
     ]
     client.post(f'/api/records/{ids[0]}/void', json={"version": 1})
     assert client.post("/api/exports/xlsx", json={"record_ids": ids, "include_pending": True}).status_code == 409
+
+
+def test_excel_download_centers_without_wrapping_and_fits_visible_content(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'fields': {
+        'arrival_date': '2026-10-15', 'material_name': '甘氨酸原料' * 8,
+        'production_dates': ['2026-01-14', '2026-01-15'],
+        'address': '河北省石家庄市高新技术产业开发区食品园区',
+        'contact': '0311-12345678', 'notes': '第一行备注\n第二行备注',
+        'certificates': '证' * 200,
+    }}).json()
+    response = client.post('/api/exports/xlsx', json={'record_ids': [record['id']], 'include_pending': True})
+    assert response.status_code == 200
+    sheet = load_workbook(BytesIO(response.content)).active
+    for row in sheet:
+        for cell in row:
+            if cell.value is not None:
+                assert cell.alignment.horizontal == 'center'
+                assert cell.alignment.vertical == 'center'
+                assert not cell.alignment.wrap_text
+    assert sheet['C3'].value == '2026.01.14、2026.01.15'
+    assert sheet.column_dimensions['A'].width >= 12
+    assert 80 <= sheet.column_dimensions['B'].width < 100
+    assert 22 <= sheet.column_dimensions['C'].width < 30
+    assert 42 <= sheet.column_dimensions['F'].width < 60
+    assert 14 <= sheet.column_dimensions['G'].width < 20
+    assert sheet.column_dimensions['J'].width == 255
+    assert sheet.column_dimensions['M'].width < 20
+    assert sheet.row_dimensions[2].height <= 24
+    assert sheet.row_dimensions[3].height == 32
 
 
 def test_word_uses_dotted_production_date_one_report_per_record_and_current_template_signatures(client):

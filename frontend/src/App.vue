@@ -534,7 +534,10 @@ async function download(kind: 'xlsx' | 'docx') {
   await perform(async () => {
     const selected = selectedVisible.value
     if (!selected.length) throw new Error('请先选择要导出的记录')
-    if (kind === 'docx' && selected.some(record => !record.inspection_enabled)) throw new Error('所选记录中有未检验记录，请取消勾选未检验记录后导出 Word')
+    if (kind === 'docx' && selected.some(record => !record.inspection_enabled)) {
+      window.alert('所选记录中有未检验记录，请取消勾选未检验记录后导出 Word')
+      return
+    }
     const pending = selected.some(r => r.status === 'pending')
     if (pending && !window.confirm('所选记录包含待核对内容，仍要导出吗？')) return
     const template = user.value ? await readExportTemplate(user.value.id, kind) : null

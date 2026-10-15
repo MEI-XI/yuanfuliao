@@ -1,74 +1,82 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef } from 'vue'
-import { chooseTemplateDirectory, downloadDefaultTemplate, importTemplateDirectory, selectedTemplateSource, supportsLocalTemplates, useServerTemplates, type TemplateSource } from './localTemplates'
+import { computed, onMounted, ref } from 'vue'
+import { downloadDefaultTemplate, importTemplateFile, selectedTemplateSources, templateFormats, templateNames, useServerTemplate, type TemplateKind, type TemplateSources } from './localTemplates'
 
 const props = withDefaults(defineProps<{ userId: number; returnLabel?: string }>(), { returnLabel: '返回公司台账' })
 const emit = defineEmits<{ close: [] }>()
-const directory = shallowRef<FileSystemDirectoryHandle | null>(null)
-const source = shallowRef<TemplateSource>({ kind: 'server' })
-const folderInput = ref<HTMLInputElement | null>(null)
+const sources = ref<TemplateSources>({ xlsx: { source: 'server' }, docx: { source: 'server' } })
+const rows: { kind: TemplateKind; label: string; title: string }[] = [
+  { kind: 'xlsx', label: 'Excel', title: 'Excel 查验台账模板' },
+  { kind: 'docx', label: 'Word', title: 'Word 检验报告模板' },
+]
+const displayedRows = computed(() => rows.map(row => ({ ...row, source: sources.value[row.kind] })))
 const busy = ref(true)
 const error = ref('')
-const supported = supportsLocalTemplates()
-
 async function action(work: () => Promise<void>) {
   busy.value = true; error.value = ''
   try { await work() }
-  catch (cause) { error.value = cause instanceof Error ? cause.message : '无法访问个人模板目录，请重新选择目录。' }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : '模板未能保存，请重新选择文件。' }
   finally { busy.value = false }
 }
-
-async function refresh() {
-  source.value = await selectedTemplateSource(props.userId)
-  directory.value = source.value.kind === 'directory' ? source.value.handle : null
-}
+async function refresh() { sources.value = await selectedTemplateSources(props.userId) }
 onMounted(() => action(refresh))
-function choose() {
-  if (!supported) { folderInput.value?.click(); return }
-  return action(async () => { await chooseTemplateDirectory(props.userId, directory.value); await refresh() })
-}
-function importFolder(event: Event) {
+function importFile(kind: TemplateKind, event: Event) {
   const input = event.target
-  if (!(input instanceof HTMLInputElement) || !input.files?.length) return
-  const files = Array.from(input.files)
+  if (!(input instanceof HTMLInputElement)) return
+  const file = input.files?.[0]
   input.value = ''
-  return action(async () => { await importTemplateDirectory(props.userId, files); await refresh() })
+  if (!file) return
+  return action(async () => { await importTemplateFile(props.userId, kind, file); await refresh() })
 }
-function reset() {
-  return action(async () => { await useServerTemplates(props.userId); await refresh() })
+function reset(kind: TemplateKind) {
+  return action(async () => { await useServerTemplate(props.userId, kind); await refresh() })
+}
+function selectedTime(value: string) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '从之前的设置保留'
 }
 </script>
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>我的模板</h1><p class="muted">本账号在当前浏览器使用的个人模板</p></div><button :disabled="busy" @click="emit('close')">{{ props.returnLabel }}</button></div>
-    <section class="admin-card">
-      <h2>本机模板目录</h2>
-      <p>在自己的电脑上选择一个项目目录之外的专用文件夹。</p>
-      <p v-if="supported">直接选择目录会补齐缺少的模板，已有文件会保留；导出时重新读取文件。</p>
-      <p role="status">{{ busy ? '正在读取模板设置…' : source.kind === 'directory' ? `已选择文件夹：${source.handle.name}` : source.kind === 'snapshot' ? `已导入文件夹副本：${source.name}` : '当前使用服务器默认模板' }}</p>
+    <div class="page-heading"><div><h1>我的模板</h1><p class="muted">分别选择 Excel 和 Word 文件，文件名可以自定。</p></div><button :disabled="busy" @click="emit('close')">{{ props.returnLabel }}</button></div>
+    <section class="admin-card template-settings" aria-label="个人导出模板">
+      <p>导出 Excel 使用查验台账模板；导出 Word 使用检验报告模板。</p>
+      <p v-if="busy" class="muted" aria-live="polite">正在处理模板…</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <div class="button-row">
-        <button class="primary" :disabled="busy" @click="choose">选择 / 更换模板目录</button>
-        <button v-if="supported" :disabled="busy || !directory" @click="choose">打开模板目录选择器</button>
-        <button v-if="supported" :disabled="busy" @click="folderInput?.click()">导入模板文件夹副本</button>
-        <button :disabled="busy" @click="reset">使用服务器默认模板</button>
+      <section v-for="row in displayedRows" :key="row.kind" class="template-row" :aria-label="row.title">
+        <div class="template-details">
+          <h2>{{ row.title }}</h2>
+          <div role="status" class="template-source">
+            <template v-if="row.source.source === 'personal'">
+              <span class="source-badge personal">个人模板</span>
+              <strong>{{ row.source.name }}</strong>
+              <span class="muted">选择时间：{{ selectedTime(row.source.selectedAt) }}</span>
+            </template>
+            <template v-else-if="row.source.source === 'legacy'">
+              <span class="source-badge">原个人模板待更新</span><span>{{ row.source.message }}</span>
+            </template>
+            <template v-else><span class="source-badge">服务器默认模板</span><strong>{{ templateNames[row.kind] }}</strong></template>
+          </div>
+        </div>
+        <div class="template-controls">
+          <label class="template-file-button" :class="{ disabled: busy }">
+            {{ row.source.source === 'server' ? '选择' : '更换' }} {{ row.label }} 模板文件
+            <input type="file" :accept="templateFormats[row.kind].join(',')" :disabled="busy" :aria-label="`选择 ${row.label} 模板文件`" @change="importFile(row.kind, $event)">
+          </label>
+          <button :disabled="busy || row.source.source === 'server'" @click="reset(row.kind)">恢复默认 {{ row.label }} 模板</button>
+          <button :disabled="busy" @click="action(() => downloadDefaultTemplate(row.kind))">下载默认 {{ row.label }} 模板</button>
+        </div>
+        <p class="muted formats">支持 {{ templateFormats[row.kind].join('、') }}；每个文件不超过 10 MiB。导出统一为 .{{ row.kind }}。</p>
+        <p v-if="row.kind === 'xlsx'" class="muted formats">Excel 模板需保留默认模板的 13 列标题与顺序。</p>
+      </section>
+      <div class="template-help">
+        <p>个人模板保存在当前浏览器，按登录账号分别保存。用 Word、Excel 或 WPS 修改本地文件后，请重新选择该文件。</p>
+        <p class="muted">可以先下载默认模板，在其基础上修改。选择文件时会发送到服务器进行格式转换和模板结构检查；个人模板不会保存在服务器，导出时会临时发送。</p>
       </div>
-      <input ref="folderInput" type="file" webkitdirectory multiple hidden :disabled="busy" aria-label="导入模板文件夹" @change="importFolder">
-      <p v-if="!supported || source.kind === 'snapshot'" class="muted">当前使用文件夹副本模式：只读取本次选择的文件并保存到当前浏览器，无法自动读取后续修改，也不能向文件夹补齐模板。用 Word、Excel 或 WPS 修改并保存后，请重新选择文件夹刷新副本。</p>
-      <div class="button-row">
-        <button :disabled="busy" @click="action(() => downloadDefaultTemplate('xlsx'))">下载默认 Excel 模板</button>
-        <button :disabled="busy" @click="action(() => downloadDefaultTemplate('docx'))">下载默认 Word 模板</button>
-      </div>
-      <p class="muted">可将下载的默认模板保存到自己的模板文件夹，再选择该文件夹。</p>
-      <ul><li>查验台账.xlsx：用于 Excel 导出</li><li>检验报告.docx：用于 Word 导出</li></ul>
-      <ul v-if="source.kind === 'snapshot'">
-        <li>查验台账.xlsx：{{ source.importedKinds.includes('xlsx') ? '已保存副本' : '未找到同名文件，使用服务器默认模板' }}</li>
-        <li>检验报告.docx：{{ source.importedKinds.includes('docx') ? '已保存副本' : '未找到同名文件，使用服务器默认模板' }}</li>
-      </ul>
-      <p>未修改或缺少对应文件时，使用服务器最新默认模板。每次重新导入都会替换之前的副本，缺少的文件不会沿用旧副本。</p>
-      <p class="muted">修改过的模板仅在本次导出时临时发送到服务器，服务器不保存个人模板。此设置仅保存在当前浏览器，按登录账号区分。</p>
-      <p v-if="supported" class="muted">“打开模板目录选择器”会从已选文件夹开始，仍由浏览器显示系统选择窗口。网页只能显示文件夹名称，无法获取完整路径。</p>
     </section>
   </main>
 </template>
+
+<style scoped>
+.template-settings{max-width:1080px}.template-row{padding:24px 0;border-top:1px solid var(--line)}.template-details h2{margin:0 0 12px}.template-source{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:30px}.template-source strong{overflow-wrap:anywhere}.source-badge{background:#edf2f5;color:#405767;padding:4px 9px;border-radius:4px;font-size:13px;white-space:nowrap}.source-badge.personal{background:#e4f4ef;color:#186c55}.template-controls{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 12px}.template-file-button{position:relative;display:inline-flex;justify-content:center;align-items:center;background:var(--teal);color:white;border-radius:6px;padding:10px 16px;min-height:42px;font-size:16px;cursor:pointer;overflow:hidden}.template-file-button:hover{background:#076b76}.template-file-button:focus-within{outline:3px solid #087f8c66;outline-offset:2px}.template-file-button.disabled{opacity:.5;cursor:default}.template-file-button input{position:absolute;inset:0;opacity:0;cursor:inherit;width:100%;height:100%}.formats{margin:0;font-size:13px;overflow-wrap:anywhere}.template-help{border-top:1px solid var(--line);padding-top:20px}.template-help p{margin-bottom:8px}@media(max-width:600px){.template-controls{flex-direction:column;align-items:stretch}.template-source{align-items:start}.template-source .muted{width:100%}}
+</style>

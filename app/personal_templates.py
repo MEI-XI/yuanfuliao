@@ -39,4 +39,4 @@ def decode_template(encoded, kind):
                 raise ValueError('document structure')
         return data
     except (binascii.Error, BadZipFile, ValueError, KeyError, OSError, XMLSyntaxError):
-        raise HTTPException(422, '个人模板无法读取，请使用有效的检验报告.docx或保留标题及13列表头的查验台账.xlsx，文件不超过10MB') from None
+        raise HTTPException(422, '个人模板无法读取，请使用有效Word模板或保留A1标题及13列的Excel模板，单个文件不超过10MiB') from None

@@ -503,6 +503,18 @@ def create_app(database_url: str | None = None) -> FastAPI:
             raise HTTPException(409, "所选记录尚未核对，确认后才能导出")
         return rows
 
+    @app.post('/api/templates/convert/{kind}')
+    def convert_uploaded_template(kind: str, file: UploadFile, user: User = Depends(current_user)):
+        from app.template_conversion import convert_template
+        if kind not in {'docx', 'xlsx'}:
+            raise HTTPException(404, '模板类型不存在')
+        content = file.file.read(10 * 1024 * 1024 + 1)
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(413, '个人模板不能超过10MB')
+        content = convert_template(content, file.filename or '', kind)
+        media = 'application/vnd.openxmlformats-officedocument.' + ('wordprocessingml.document' if kind == 'docx' else 'spreadsheetml.sheet')
+        return Response(content, media_type=media, headers={'Cache-Control': 'no-store'})
+
     @app.get('/api/templates/{kind}')
     def default_template(kind: str, user: User = Depends(current_user)):
         from app.exporting import template_dir

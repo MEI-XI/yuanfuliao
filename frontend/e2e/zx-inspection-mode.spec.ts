@@ -33,9 +33,10 @@ test('未检验默认收起锁定，开启后默认今天，切回保留内容�
   await expect(row).toContainText('未检验')
   await page.getByRole('button', { name: '清空选择', exact: true }).click()
   await row.getByRole('checkbox').check()
+  let wordReminder = ''
+  page.once('dialog', async dialog => { wordReminder = dialog.message(); await dialog.accept() })
   await page.getByRole('button', { name: '导出 Word', exact: true }).click()
-  await expect(page.getByRole('alert')).toContainText('取消勾选未检验记录')
-  await page.getByRole('alert').getByRole('button', { name: '关闭' }).click()
+  expect(wordReminder).toContain('取消勾选未检验记录')
   await row.getByRole('button', { name: '核对 / 编辑' }).click()
   await expect(page.getByRole('radio', { name: '未检验', exact: true })).toBeChecked()
   await page.getByRole('radio', { name: '检验', exact: true }).check()
