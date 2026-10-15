@@ -17,6 +17,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(80), unique=True)
     password_hash: Mapped[str] = mapped_column(String(256))
+    password_encrypted: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="user")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -26,6 +27,19 @@ class LoginSession(Base):
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Snapshot identity intentionally has no FK: deleting an unused account keeps its audit trail.
+    actor_id: Mapped[int] = mapped_column()
+    actor_username: Mapped[str] = mapped_column(String(80))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    action: Mapped[str] = mapped_column(String(80))
+    target: Mapped[str] = mapped_column(String(300))
+    status_code: Mapped[int] = mapped_column()
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Ledger(Base):
@@ -48,6 +62,7 @@ class Record(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     checker_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id"), nullable=True)
     scheme_name: Mapped[str] = mapped_column(String(120), default="")
     items: Mapped[list] = mapped_column(JSON, default=list)
@@ -66,12 +81,29 @@ class History(Base):
     snapshot: Mapped[dict] = mapped_column(JSON)
 
 
+class BatchSubmission(Base):
+    __tablename__ = "batch_submissions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    ledger_id: Mapped[int] = mapped_column(ForeignKey("ledgers.id", ondelete="CASCADE"))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    record_ids: Mapped[list] = mapped_column(JSON)
+
+
 class Material(Base):
     __tablename__ = "materials"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     model: Mapped[str] = mapped_column(String(200), default="")
     aliases: Mapped[str] = mapped_column(String(500), default="")
+    specification: Mapped[str] = mapped_column(String(500), default="")
+    company_name: Mapped[str] = mapped_column(String(200), default="")
+    address: Mapped[str] = mapped_column(String(1000), default="")
+    contact: Mapped[str] = mapped_column(String(500), default="")
+    shelf_life: Mapped[str] = mapped_column(String(200), default="")
+    packaging: Mapped[str] = mapped_column(String(500), default="")
+    address_source: Mapped[str] = mapped_column(String(24), default="")
+    contact_source: Mapped[str] = mapped_column(String(24), default="")
 
 
 class Scheme(Base):

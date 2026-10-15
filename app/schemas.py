@@ -1,8 +1,11 @@
 from typing import Literal
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.expiry import normalize_shelf_life
 
 
 class Input(BaseModel):
@@ -15,11 +18,12 @@ class Credentials(Input):
 
 
 class UserCreate(Credentials):
-    role: Literal["admin", "user"] = "user"
+    role: Literal["superadmin", "admin", "user"] = "user"
 
 
 class UserChange(Input):
-    role: Literal["admin", "user"] | None = None
+    username: str | None = Field(default=None, min_length=1, max_length=80)
+    role: Literal["superadmin", "admin", "user"] | None = None
     active: bool | None = None
     password: str | None = Field(default=None, min_length=10, max_length=128)
 
@@ -46,11 +50,17 @@ class RecordFields(Input):
     address_source: Literal["", "supplier", "manufacturer"] = ""
     contact_source: Literal["", "supplier", "manufacturer"] = ""
     shelf_life: str = ""
+    expiry_date: date | None = None
     received_quantity: str = ""
     certificates: str = ""
     sensory: str = ""
     sampling_items: str = ""
     notes: str = ""
+
+    @field_validator('shelf_life')
+    @classmethod
+    def shelf_life_months(cls, value):
+        return normalize_shelf_life(value)
 
 
 class InspectionItem(Input):
@@ -63,6 +73,7 @@ class InspectionItem(Input):
 
 class ReportFields(Input):
     packaging: str = ""
+    batch_number: str = "\\"
     basis: str = ""
     inspection_date: date | None = Field(default_factory=lambda: datetime.now(ZoneInfo("Asia/Shanghai")).date())
     internal_report: str = ""
@@ -86,6 +97,27 @@ class VersionInput(Input):
     version: int = Field(ge=1)
 
 
+class RecordVersion(VersionInput):
+    id: int = Field(ge=1)
+
+
+class BatchVoidInput(Input):
+    records: list[RecordVersion] = Field(min_length=1, max_length=200)
+
+    @field_validator('records')
+    @classmethod
+    def unique_records(cls, value):
+        if len({item.id for item in value}) != len(value):
+            raise ValueError('不能重复选择同一条记录')
+        return value
+
+
+class BatchRecordCreate(Input):
+    request_id: UUID
+    mark_checked: bool = False
+    records: list[RecordCreate] = Field(min_length=1, max_length=200)
+
+
 class RecordChange(VersionInput):
     inspection_enabled: bool | None = None
     recognition_job_id: int | None = None
@@ -101,6 +133,19 @@ class MaterialInput(Input):
     name: str = Field(min_length=1, max_length=200)
     model: str = ""
     aliases: str = ""
+    specification: str = Field(default="", max_length=500)
+    company_name: str = Field(default="", max_length=200)
+    address: str = Field(default="", max_length=1000)
+    contact: str = Field(default="", max_length=500)
+    shelf_life: str = Field(default="", max_length=200)
+    packaging: str = Field(default="", max_length=500)
+    address_source: Literal["", "supplier", "manufacturer"] = ""
+    contact_source: Literal["", "supplier", "manufacturer"] = ""
+
+    @field_validator('shelf_life')
+    @classmethod
+    def shelf_life_months(cls, value):
+        return normalize_shelf_life(value)
 
 
 class StandardItem(Input):
@@ -119,6 +164,12 @@ class ExportInput(Input):
     record_ids: list[int] = Field(min_length=1, max_length=500)
     include_pending: bool = False
     template_base64: str | None = Field(default=None, max_length=14_000_000)
+
+
+class ShelfLifeInput(Input):
+    production_dates: list[date] = Field(default_factory=list)
+    shelf_life: str = ""
+    expiry_date: date | None = None
 
 
 class PartnerInput(Input):

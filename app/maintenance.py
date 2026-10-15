@@ -3,6 +3,7 @@ from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.models import History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, User
+from app.report_attachments import ReportAttachment
 
 
 def register_maintenance_routes(app, db, administrator):
@@ -34,10 +35,14 @@ def register_maintenance_routes(app, db, administrator):
     def delete_user(user_id: int, user: User = Depends(administrator), session: Session = Depends(db)):
         session.execute(text('SELECT pg_advisory_xact_lock(814015)'))
         item = entry(session, User, user_id, '账号')
+        if item.role == 'superadmin' and user.role != 'superadmin':
+            raise HTTPException(403, '只有超级管理员可以管理该账号')
         if item.id == user.id:
             raise HTTPException(409, '不能删除当前登录账号')
+        if item.role == 'superadmin':
+            raise HTTPException(409, '不能删除超级管理员')
         if item.role == 'admin' and item.active:
-            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role == 'admin', User.active.is_(True)).limit(1))
+            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role.in_(('admin', 'superadmin')), User.active.is_(True)).limit(1))
             if other_admin is None:
                 raise HTTPException(409, '至少需要保留一个启用的管理员账号')
         references = (
@@ -45,6 +50,7 @@ def register_maintenance_routes(app, db, administrator):
             select(History.id).where(History.actor_id == user_id),
             select(Photo.id).where(Photo.owner_id == user_id),
             select(RecognitionJob.id).where(RecognitionJob.owner_id == user_id),
+            select(ReportAttachment.id).where(ReportAttachment.owner_id == user_id),
         )
         if any(session.scalar(query.limit(1)) is not None for query in references):
             raise HTTPException(409, '该账号已有业务记录、照片或识别历史，请改为停用账号，以保留责任人信息')
