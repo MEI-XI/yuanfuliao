@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
+import AuditLog from './AuditLog.vue'
 import { api, json, raw, userSchema, ledgerSchema, materialSchema, schemeSchema, partnerSchema, type User, type Ledger } from './api'
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
+const props = defineProps<{ currentUser: User }>()
+const superadmin = computed(() => props.currentUser.role === 'superadmin')
+const roleNames = { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }
 const tab = ref('materials')
-const tabs = [{ key: 'materials', name: '物料与检验标准' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }]
+const tabs = computed(() => [{ key: 'materials', name: '物料与检验标准' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }, ...(superadmin.value ? [{ key: 'audit', name: '操作日志' }] : [])])
 const error = ref(''), notice = ref(''), busy = ref(false)
 const users = ref<User[]>([]), ledgers = ref<Ledger[]>([])
 const materials = ref<z.infer<typeof materialSchema>[]>([]), schemes = ref<z.infer<typeof schemeSchema>[]>([]), partners = ref<z.infer<typeof partnerSchema>[]>([])
 const material = reactive({ id: 0, name: '', model: '', aliases: '' })
 const scheme = reactive<{ id: number; material_id: number | null; name: string; items: { name: string; standard: string; unit: string }[] }>({ id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
 const partner = reactive<{ id: number; name: string; kind: 'supplier' | 'manufacturer'; address: string; contact: string }>({ id: 0, name: '', kind: 'supplier', address: '', contact: '' })
-const account = reactive<{ id: number; username: string; password: string; role: 'admin' | 'user'; active: boolean }>({ id: 0, username: '', password: '', role: 'user', active: true })
+const account = reactive<User & { password: string }>({ id: 0, username: '', password: '', role: 'user', active: true })
+const credential = ref<{ kind: 'hidden' } | { kind: 'unavailable' } | { kind: 'visible'; password: string }>({ kind: 'hidden' })
 const company = reactive({ id: 0, name: '' })
 const cloudKey = ref(''), cloudConfigured = ref(false)
 const cloudTesting = ref(false), cloudTestMessage = ref(''), cloudTestOk = ref(false)
@@ -37,6 +42,7 @@ function openPartner(entry?: z.infer<typeof partnerSchema>) {
   void showEditor('partner', entry?.name)
 }
 function openAccount(entry?: User) {
+  credential.value = { kind: 'hidden' }
   Object.assign(account, entry ? { ...entry, password: '' } : { id: 0, username: '', password: '', role: 'user', active: true })
   void showEditor('account', entry?.username)
 }
@@ -50,6 +56,7 @@ async function openCloud() {
   await nextTick(); formHeading.value?.focus(); formHeading.value?.scrollIntoView({ block: 'start' })
 }
 function closeEditor() {
+  credential.value = { kind: 'hidden' }
   editor.value = null
   Object.assign(material, { id: 0, name: '', model: '', aliases: '' })
   Object.assign(scheme, { id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
@@ -102,7 +109,29 @@ onMounted(() => action(refresh, ''))
 async function saveMaterial() { await action(async () => { const { id, ...body } = material; await api(id ? `/materials/${id}` : '/materials', materialSchema, json(id ? 'PUT' : 'POST', body)); closeEditor() }) }
 async function saveScheme() { await action(async () => { const { id, ...body } = scheme; await api(id ? `/schemes/${id}` : '/schemes', schemeSchema, json(id ? 'PUT' : 'POST', { ...body, items: body.items.map(item => ({ ...item, unit: '' })) })); closeEditor() }) }
 async function savePartner() { await action(async () => { const { id, ...body } = partner; await api(id ? `/partners/${id}` : '/partners', partnerSchema, json(id ? 'PUT' : 'POST', body)); closeEditor() }) }
-async function saveAccount() { await action(async () => { const { id, username, password, role, active } = account; const body = id ? { role, active, ...(password ? { password } : {}) } : { username, password, role }; await api(id ? `/users/${id}` : '/users', userSchema, json(id ? 'PATCH' : 'POST', body)); closeEditor() }) }
+async function saveAccount() {
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    const { id, username, password, role, active } = account
+    const body = id ? { ...(superadmin.value ? { username, role } : {}), active, ...(password ? { password } : {}) } : { username, password, role: superadmin.value ? role : 'user' }
+    const saved = await api(id ? `/users/${id}` : '/users', userSchema, json(id ? 'PATCH' : 'POST', body))
+    closeEditor()
+    if (id === props.currentUser.id) {
+      if (password) { emit('reauthenticate'); return }
+      emit('userUpdated', saved)
+    }
+    await refresh(); notice.value = '已保存'
+  } catch (e) { error.value = e instanceof Error ? e.message : '账号保存失败' }
+  finally { busy.value = false }
+}
+async function revealPassword() {
+  busy.value = true; error.value = ''; credential.value = { kind: 'hidden' }
+  try {
+    const result = await api(`/users/${account.id}/password`, z.object({ password: z.string().nullable() }), { cache: 'no-store' })
+    credential.value = result.password === null ? { kind: 'unavailable' } : { kind: 'visible', password: result.password }
+  } catch (e) { error.value = e instanceof Error ? e.message : '密码读取失败' }
+  finally { busy.value = false }
+}
 async function saveCompany() { await action(async () => { await api(company.id ? `/ledgers/${company.id}` : '/ledgers', ledgerSchema, json(company.id ? 'PATCH' : 'POST', { name: company.name })); closeEditor() }) }
 async function saveCloud() { cloudTestMessage.value = ''; await action(async () => { await api('/settings/cloud', z.object({ configured: z.boolean() }), json('PUT', { api_key: cloudKey.value })); closeEditor() }) }
 async function testCloud() {
@@ -138,7 +167,13 @@ async function testCloud() {
         <div class="button-row"><button class="primary">{{ partner.id ? '保存修改' : '创建单位' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'account'" @submit.prevent="saveAccount"><fieldset :disabled="busy">
-        <div class="field-grid"><label>人员账号<input v-model="account.username" :disabled="!!account.id" required></label><label>{{ account.id ? '重置密码，留空则不修改' : '初始密码' }}<input v-model="account.password" type="password" autocomplete="new-password" minlength="10" :required="!account.id"></label><label>角色<select v-model="account.role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label><label v-if="account.id" class="checkbox-label"><input v-model="account.active" type="checkbox">账号启用</label></div>
+        <div class="field-grid"><label>人员账号<input v-model="account.username" :disabled="!!account.id && !superadmin" required></label><label>{{ account.id ? '重置密码，留空则不修改' : '初始密码' }}<input v-model="account.password" type="password" autocomplete="new-password" minlength="10" :required="!account.id"></label><label>角色<select v-model="account.role" :disabled="!superadmin || account.role === 'superadmin'"><option value="user">普通用户</option><option value="admin">管理员</option><option v-if="account.role === 'superadmin'" value="superadmin">超级管理员</option></select></label><label v-if="account.id" class="checkbox-label"><input v-model="account.active" type="checkbox" :disabled="account.role === 'superadmin'">账号启用</label></div>
+        <div v-if="account.id && superadmin" class="credential-view">
+          <p class="muted">查看密码会记录在操作日志中。历史账号的原密码可能无法查看，可通过重置设置新密码。</p>
+          <button v-if="credential.kind === 'hidden'" type="button" @click="revealPassword">查看密码</button>
+          <template v-else-if="credential.kind === 'visible'"><label>当前密码<input :value="credential.password" readonly autocomplete="off"></label><button type="button" @click="credential = { kind: 'hidden' }">隐藏密码</button></template>
+          <p v-else role="status">原密码不可查看，重置后可查看。</p>
+        </div>
         <div class="button-row"><button class="primary">{{ account.id ? '保存修改' : '创建账号' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'company'" @submit.prevent="saveCompany"><fieldset :disabled="busy">
@@ -157,7 +192,8 @@ async function testCloud() {
       <section class="admin-card"><div class="module-heading"><h2>检验标准方案</h2><button class="primary" :disabled="busy" @click="openScheme()">新增检验方案</button></div><div class="maintenance-list"><div v-for="entry in schemes" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openScheme(entry)"><span>{{ materials.find(m => m.id === entry.material_id)?.name || '通用' }} / {{ entry.name }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteScheme(entry)">删除</button></div><p v-if="!schemes.length" class="module-empty">暂无检验方案，点击“新增检验方案”维护项目与标准。</p></div></section>
     </div>
     <section v-else-if="tab === 'partners'" class="admin-card"><div class="module-heading"><h2>供应商与生产商资料</h2><button class="primary" :disabled="busy" @click="openPartner()">新增单位</button></div><div class="maintenance-list"><div v-for="entry in partners" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openPartner(entry)"><span>{{ entry.name }}<span class="row-details">{{ entry.kind === 'supplier' ? '供应商' : '生产商' }}<template v-if="entry.address"> · {{ entry.address }}</template></span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deletePartner(entry)">删除</button></div><p v-if="!partners.length" class="module-empty">暂无单位资料，点击“新增单位”建立供应商或生产商资料。</p></div></section>
-    <section v-else-if="tab === 'users'" class="admin-card"><div class="module-heading"><h2>人员列表</h2><button class="primary" :disabled="busy" @click="openAccount()">新增账号</button></div><div class="maintenance-list"><div v-for="entry in users" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openAccount(entry)"><span>{{ entry.username }}<span class="row-details">{{ entry.role === 'admin' ? '管理员' : '普通用户' }} · {{ entry.active ? '启用' : '停用' }}</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></div></div></section>
+    <section v-else-if="tab === 'users'" class="admin-card"><div class="module-heading"><h2>人员列表</h2><button class="primary" :disabled="busy" @click="openAccount()">新增账号</button></div><div class="maintenance-list"><div v-for="entry in users" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy || (!superadmin && entry.role === 'superadmin')" @click="openAccount(entry)"><span>{{ entry.username }}<span class="row-details">{{ roleNames[entry.role] }} · {{ entry.active ? '启用' : '停用' }}</span></span><small>修改</small></button><button v-if="entry.role !== 'superadmin'" class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></div></div></section>
+    <AuditLog v-else-if="tab === 'audit' && superadmin" />
     <section v-else-if="tab === 'ledgers'" class="admin-card"><div class="module-heading"><h2>已建立台账</h2><button class="primary" :disabled="busy" @click="openCompany()">新增台账</button></div><div class="maintenance-list"><div v-for="entry in ledgers" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openCompany(entry)"><span>{{ entry.name }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteCompany(entry)">删除</button></div><p v-if="!ledgers.length" class="module-empty">暂无公司台账，点击“新增台账”建立台账。</p></div></section>
     <div v-else class="admin-columns"><section class="admin-card"><h2>智谱云端辅助</h2><p>模型：GLM-4.1V-Thinking-Flash</p><p class="muted">{{ cloudConfigured ? '已配置密钥，可测试连接或更新密钥。' : '尚未配置密钥，本地识别可以独立使用。' }}</p><div class="button-row"><button class="primary" :disabled="busy" @click="openCloud">{{ cloudConfigured ? '更新密钥' : '配置密钥' }}</button><button :disabled="busy || !cloudConfigured" @click="testCloud">{{ cloudTesting ? '测试中…' : '测试连接' }}</button><button :disabled="busy || !cloudConfigured" @click="cloudKey = ''; saveCloud()">清除密钥</button></div><p v-if="cloudTestMessage" :role="cloudTestOk ? 'status' : 'alert'" :class="cloudTestOk ? 'success' : 'error'">{{ cloudTestMessage }}</p></section><section class="admin-card"><h2>个人导出模板</h2><p>请从顶部“我的模板”选择本机文件夹，普通用户也可设置。</p><p class="muted">在 Word/WPS 中修改本地模板的签名图片并保存。导出时优先使用已修改的本地模板，不覆盖服务器默认模板。</p></section></div>
   </main>
@@ -169,6 +205,7 @@ async function testCloud() {
 .maintenance-edit span{overflow-wrap:anywhere}
 .maintenance-edit small{flex-shrink:0;color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:6px 12px}
 .maintenance-delete{color:#a83232;flex-shrink:0}
+.credential-view{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.credential-view label{max-width:440px;margin-bottom:12px}
 .standard-edit-row{grid-template-columns:1fr 1.5fr auto}
 @media(max-width:600px){.standard-edit-row{grid-template-columns:1fr}.module-heading{align-items:flex-start;gap:12px}.module-heading h2{font-size:17px}.module-heading button{padding:8px 10px;font-size:13px}.maintenance-edit{gap:8px;padding:10px 4px}.maintenance-edit small{padding:6px 8px}.admin-form{padding:20px 16px}}
 </style>

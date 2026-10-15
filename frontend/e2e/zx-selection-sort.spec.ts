@@ -1,0 +1,81 @@
+import { test, expect, type Page } from '@playwright/test'
+
+async function enter(page: Page) {
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.getByRole('button', { name: '进入青山科技' }).click()
+}
+
+test('勾选部分分组保存，未选分组保留，核对选项与保存按钮同栏', async ({ page }) => {
+  await enter(page)
+  await page.getByRole('button', { name: '上传与录入' }).click()
+  await page.getByRole('button', { name: '多种物料批量', exact: true }).click()
+  await page.getByLabel('选择包装照片').setInputFiles(Array(3).fill('../tests/fixtures/label.png'))
+  for (let i = 1; i <= 3; i++) {
+    await page.getByRole('button', { name: `记录 ${i} · 1 张`, exact: true }).click()
+    await page.getByLabel('物料名称、型号', { exact: true }).fill(`选择保存样本${i}`)
+  }
+  await page.getByRole('button', { name: '全选分组', exact: true }).click()
+  await page.getByRole('button', { name: '全部清空', exact: true }).click()
+  await page.getByRole('checkbox', { name: '选择分组 1', exact: true }).check()
+  await page.getByRole('checkbox', { name: '选择分组 3', exact: true }).check()
+  await expect(page.getByRole('button', { name: '保存并标记已核对', exact: true })).toHaveCount(0)
+  const bar = page.locator('.save-bar')
+  await bar.getByRole('checkbox', { name: '同时标记为已核对', exact: true }).check()
+  await bar.getByRole('button', { name: '保存所选 2 条记录', exact: true }).click()
+  await expect(page.getByLabel('物料名称、型号', { exact: true })).toHaveValue('选择保存样本2')
+  await expect(page.getByRole('status').filter({ hasText: '已保存 2 条' })).toBeVisible()
+  await page.getByRole('button', { name: '返回台账', exact: true }).click()
+  await expect(page.getByRole('row').filter({ hasText: '选择保存样本1' })).toContainText('已核对')
+  await expect(page.getByRole('row').filter({ hasText: '选择保存样本3' })).toContainText('已核对')
+  await expect(page.getByRole('row').filter({ hasText: '选择保存样本2' })).toHaveCount(0)
+})
+
+test('点击表头切换排序，批量作废只影响勾选记录', async ({ page }) => {
+  await enter(page)
+  const ledgers = await (await page.request.get('/api/ledgers')).json()
+  const ledger = ledgers.find((entry: {name: string}) => entry.name === '青山科技')
+  for (const [name, quantity] of [['排序作废甲', '10'], ['排序作废乙', '2'], ['排序作废丙', '30']]) {
+    await page.request.post(`/api/ledgers/${ledger.id}/records`, { data: { fields: { material_name: name, received_quantity: quantity } } })
+  }
+  await page.reload()
+  await page.getByRole('button', { name: '进入青山科技' }).click()
+  await page.getByPlaceholder('物料名称、供应商或生产商').fill('排序作废')
+  await page.getByRole('button', { name: '按接收数量排序', exact: true }).click()
+  await expect(page.locator('tbody tr').first()).toContainText('排序作废乙')
+  await page.getByRole('button', { name: '按接收数量排序', exact: true }).click()
+  await expect(page.locator('tbody tr').first()).toContainText('排序作废丙')
+  await page.getByRole('button', { name: '清空选择', exact: true }).click()
+  await page.getByRole('row').filter({ hasText: '排序作废甲' }).getByRole('checkbox').check()
+  await page.getByRole('row').filter({ hasText: '排序作废丙' }).getByRole('checkbox').check()
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: '批量作废', exact: true }).click()
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  await expect(page.locator('tbody tr')).toContainText('排序作废乙')
+  await page.getByRole('button', { name: '回收站', exact: true }).click()
+  await expect(page.getByRole('row').filter({ hasText: '排序作废甲' })).toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: '排序作废丙' })).toBeVisible()
+})
+
+test('合并前提示报告内容差异，取消时两组结论都保留', async ({ page }) => {
+  await enter(page)
+  await page.getByRole('button', { name: '上传与录入' }).click()
+  await page.getByRole('button', { name: '多种物料批量', exact: true }).click()
+  await page.getByLabel('选择包装照片').setInputFiles(Array(2).fill('../tests/fixtures/label.png'))
+  await page.getByRole('radio', { name: '检验', exact: true }).check()
+  await page.getByLabel('结论', { exact: true }).fill('目标组报告结论')
+  await page.getByRole('button', { name: '记录 2 · 1 张', exact: true }).click()
+  await page.getByRole('radio', { name: '检验', exact: true }).check()
+  await page.getByLabel('结论', { exact: true }).fill('来源组报告结论')
+  let prompted = false
+  page.once('dialog', async dialog => { prompted = true; await dialog.dismiss() })
+  const handle = page.getByRole('button', { name: '拖动记录 2 排序', exact: true })
+  await handle.press('m')
+  await handle.press('Enter')
+  expect(prompted).toBeTruthy()
+  await expect(page.getByLabel('结论', { exact: true })).toHaveValue('来源组报告结论')
+  await page.getByRole('button', { name: '记录 1 · 1 张', exact: true }).click()
+  await expect(page.getByLabel('结论', { exact: true })).toHaveValue('目标组报告结论')
+})

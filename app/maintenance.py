@@ -34,10 +34,14 @@ def register_maintenance_routes(app, db, administrator):
     def delete_user(user_id: int, user: User = Depends(administrator), session: Session = Depends(db)):
         session.execute(text('SELECT pg_advisory_xact_lock(814015)'))
         item = entry(session, User, user_id, '账号')
+        if item.role == 'superadmin' and user.role != 'superadmin':
+            raise HTTPException(403, '只有超级管理员可以管理该账号')
         if item.id == user.id:
             raise HTTPException(409, '不能删除当前登录账号')
+        if item.role == 'superadmin':
+            raise HTTPException(409, '不能删除超级管理员')
         if item.role == 'admin' and item.active:
-            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role == 'admin', User.active.is_(True)).limit(1))
+            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role.in_(('admin', 'superadmin')), User.active.is_(True)).limit(1))
             if other_admin is None:
                 raise HTTPException(409, '至少需要保留一个启用的管理员账号')
         references = (

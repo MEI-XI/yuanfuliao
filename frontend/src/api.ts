@@ -1,7 +1,11 @@
 import { z } from 'zod'
 
-export const userSchema = z.object({ id: z.number(), username: z.string(), role: z.enum(['admin', 'user']), active: z.boolean() })
+export const userSchema = z.object({ id: z.number(), username: z.string(), role: z.enum(['superadmin', 'admin', 'user']), active: z.boolean() })
 export const ledgerSchema = z.object({ id: z.number(), name: z.string() })
+export const auditPageSchema = z.object({
+  items: z.array(z.object({ id: z.number(), actor_id: z.number(), actor_username: z.string(), at: z.string(), action: z.string(), target: z.string(), status_code: z.number(), details: z.record(z.string(), z.unknown()) })),
+  total: z.number(), page: z.number(), page_size: z.number(),
+})
 export const itemSchema = z.object({ name: z.string().default(''), standard: z.string().default(''), unit: z.string().default(''), result: z.string().default(''), conclusion: z.string().default('') })
 export const fieldsSchema = z.object({
   arrival_date: z.string().nullable().default(null), material_name: z.string().default(''),

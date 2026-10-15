@@ -23,9 +23,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
-from app.schemas import BatchRecordCreate, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
+from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, UserChange, UserCreate, VersionInput
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
+from app.credentials import encrypt_password, decrypt_password
 
 passwords = PasswordHasher()
 
@@ -90,12 +91,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
         user = session.get(User, login.user_id) if login and login.expires_at > utcnow() else None
         if not user or not user.active:
             raise HTTPException(401, "请先登录")
+        request.state.audit_actor = (user.id, user.username)
         return user
 
     def administrator(user: User = Depends(current_user)):
-        if user.role != "admin":
+        if user.role not in ("admin", "superadmin"):
             raise HTTPException(403, "此操作需要管理员权限")
         return user
+
+    from app.audit import register_audit
+    register_audit(app, engine, db, current_user)
 
     from app.maintenance import register_maintenance_routes
     register_maintenance_routes(app, db, administrator)
@@ -114,13 +119,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.execute(text("SELECT pg_advisory_xact_lock(814014)"))
         if session.scalar(select(User.id).limit(1)) is not None:
             raise HTTPException(409, "已完成初始化")
-        user = User(username=body.username, password_hash=passwords.hash(body.password), role="admin")
+        user = User(username=body.username, password_hash=passwords.hash(body.password), password_encrypted=encrypt_password(body.password), role="superadmin")
         session.add(user)
         session.commit()
         return user_view(user)
 
     @app.post("/api/login")
-    def login(body: Credentials, response: Response, session: Session = Depends(db)):
+    def login(body: Credentials, response: Response, request: Request, session: Session = Depends(db)):
         user = session.scalar(select(User).where(User.username == body.username))
         try:
             valid = user and user.active and passwords.verify(user.password_hash, body.password)
@@ -128,6 +133,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             valid = False
         if not valid:
             raise HTTPException(401, "账号或密码不正确")
+        request.state.audit_actor = (user.id, user.username)
         token = secrets.token_urlsafe(32)
         session.add(LoginSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
                                  expires_at=utcnow() + timedelta(hours=12)))
@@ -143,6 +149,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.post("/api/logout", status_code=204)
     def logout(request: Request, response: Response, session: Session = Depends(db)):
         token = request.cookies.get("session", "")
+        login_session = session.get(LoginSession, hashlib.sha256(token.encode()).hexdigest())
+        actor = session.get(User, login_session.user_id) if login_session and login_session.expires_at > utcnow() else None
+        if actor and actor.active:
+            request.state.audit_actor = (actor.id, actor.username)
         session.execute(delete(LoginSession).where(LoginSession.token_hash == hashlib.sha256(token.encode()).hexdigest()))
         session.commit()
         response.delete_cookie("session")
@@ -157,7 +167,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.post("/api/users", status_code=201)
     def add_user(body: UserCreate, user: User = Depends(administrator), session: Session = Depends(db)):
-        item = User(username=body.username, password_hash=passwords.hash(body.password), role=body.role)
+        if body.role == "superadmin" or (user.role != "superadmin" and body.role != "user"):
+            raise HTTPException(403, "只有超级管理员可以设置管理员权限，不能新增超级管理员")
+        item = User(username=body.username, password_hash=passwords.hash(body.password), password_encrypted=encrypt_password(body.password), role=body.role)
         session.add(item)
         session.commit()
         return user_view(item)
@@ -168,19 +180,38 @@ def create_app(database_url: str | None = None) -> FastAPI:
         item = session.get(User, user_id)
         if not item:
             raise HTTPException(404, "账号不存在")
+        if user.role != "superadmin" and (item.role == "superadmin" or (body.role is not None and body.role != item.role) or body.username is not None):
+            raise HTTPException(403, "只有超级管理员可以修改该账号或权限")
+        if body.role == "superadmin" and item.role != "superadmin":
+            raise HTTPException(403, "不能新增超级管理员")
+        if item.role == "superadmin" and (body.role not in (None, "superadmin") or body.active is False):
+            raise HTTPException(409, "超级管理员不能降级或停用")
         if item.role == "admin" and item.active and (body.role == "user" or body.active is False):
-            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role == "admin", User.active.is_(True)).limit(1))
+            other_admin = session.scalar(select(User.id).where(User.id != item.id, User.role.in_(("admin", "superadmin")), User.active.is_(True)).limit(1))
             if other_admin is None:
                 raise HTTPException(409, "至少需要保留一个启用的管理员账号")
+        if body.username is not None:
+            item.username = body.username
         if body.role is not None:
             item.role = body.role
         if body.active is not None:
             item.active = body.active
         if body.password:
             item.password_hash = passwords.hash(body.password)
+            item.password_encrypted = encrypt_password(body.password)
             session.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
         session.commit()
         return user_view(item)
+
+    @app.get("/api/users/{user_id}/password")
+    def reveal_password(user_id: int, response: Response, user: User = Depends(administrator), session: Session = Depends(db)):
+        if user.role != "superadmin":
+            raise HTTPException(403, "只有超级管理员可以查看密码")
+        item = session.get(User, user_id)
+        if not item:
+            raise HTTPException(404, "账号不存在")
+        response.headers["Cache-Control"] = "no-store"
+        return {"password": decrypt_password(item.password_encrypted)}
 
     @app.get("/api/ledgers")
     def ledgers(user: User = Depends(current_user), session: Session = Depends(db)):
@@ -216,7 +247,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         item = session.scalar(select(Record).where(Record.id == record_id).with_for_update())
         if not item or record_expired(item):
             raise HTTPException(404, "记录不存在")
-        if user.role != "admin" and item.creator_id != user.id:
+        if user.role not in ("admin", "superadmin") and item.creator_id != user.id:
             raise HTTPException(403, "只能修改或核对自己创建的记录")
         if item.status == "void":
             raise HTTPException(409, "作废记录不能修改")
@@ -289,6 +320,27 @@ def create_app(database_url: str | None = None) -> FastAPI:
                                     payload_hash=payload_hash, record_ids=[item.id for item in saved]))
         session.commit()
         return [record_view(item) for item in saved]
+
+    @app.post('/api/records/batch-void')
+    def batch_void_records(body: BatchVoidInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+        versions = {entry.id: entry.version for entry in body.records}
+        rows = list(session.scalars(select(Record).where(Record.id.in_(versions)).order_by(Record.id).with_for_update()))
+        if len(rows) != len(versions) or any(record_expired(row) for row in rows):
+            raise HTTPException(404, '记录不存在')
+        for row in rows:
+            if row.status == 'void':
+                raise HTTPException(409, '所选记录包含已作废记录，请刷新列表')
+            if row.version != versions[row.id]:
+                raise HTTPException(409, '所选记录已被修改，请刷新列表后重试')
+        now = utcnow()
+        for row in rows:
+            row.status, row.voided_at, row.updated_at = 'void', now, now
+            row.version += 1
+            append_history(row, user, 'voided', session)
+        session.commit()
+        request.state.audit_details = {'record_ids': [row.id for row in rows]}
+        by_id = {row.id: row for row in rows}
+        return [record_view(by_id[entry.id]) for entry in body.records]
 
     @app.get("/api/records/{record_id}")
     def record(record_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
@@ -463,10 +515,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return FileResponse(path, filename=FILENAMES[kind], headers={'Cache-Control': 'no-store'})
 
     @app.post("/api/exports/xlsx")
-    def export_excel(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
+    def export_excel(body: ExportInput, request: Request, user: User = Depends(current_user), session: Session = Depends(db)):
         from app.exporting import excel_bytes
         from app.personal_templates import decode_template
         rows = export_records(body, session)
+        request.state.audit_details = {'record_ids': [row.id for row in rows]}
         template = decode_template(body.template_base64, 'xlsx')
         names = {row.ledger_id: session.get(Ledger, row.ledger_id).name for row in rows}
         try:
@@ -477,10 +530,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
                         headers={"Content-Disposition": 'attachment; filename="ledger.xlsx"'})
 
     @app.post("/api/exports/docx")
-    def export_word(body: ExportInput, user: User = Depends(current_user), session: Session = Depends(db)):
+    def export_word(body: ExportInput, request: Request, user: User = Depends(current_user), session: Session = Depends(db)):
         from app.exporting import report_filename, word_archive, word_bytes
         from app.personal_templates import decode_template
         rows = export_records(body, session)
+        request.state.audit_details = {'record_ids': [row.id for row in rows]}
         if any(not row.inspection_enabled for row in rows):
             raise HTTPException(409, '所选记录中有未检验记录，请取消勾选未检验记录后导出 Word')
         template = decode_template(body.template_base64, 'docx')
@@ -500,7 +554,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             image = session.get(Photo, image_id)
             if not image or image.ledger_id != ledger_id:
                 raise HTTPException(422, "图片不属于当前台账")
-            if image.owner_id != user.id and user.role != "admin":
+            if image.owner_id != user.id and user.role not in ("admin", "superadmin"):
                 raise HTTPException(403, "只能使用自己上传的图片")
 
     @app.post("/api/ledgers/{ledger_id}/images", status_code=201)
@@ -532,7 +586,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         photo = session.get(Photo, image_id)
         if not photo:
             raise HTTPException(404, "图片不存在")
-        if photo.owner_id != user.id and user.role != "admin":
+        if photo.owner_id != user.id and user.role not in ("admin", "superadmin"):
             attached = any(image_id in record.image_ids for record in session.scalars(select(Record).where(Record.ledger_id == photo.ledger_id)))
             if not attached:
                 raise HTTPException(403, "图片尚未关联可查看记录")
@@ -579,7 +633,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         job = session.get(RecognitionJob, job_id)
         if not job:
             raise HTTPException(404, "识别任务不存在")
-        if job.owner_id != user.id and user.role != "admin":
+        if job.owner_id != user.id and user.role not in ("admin", "superadmin"):
             if not session.scalar(select(Record.id).where(Record.recognition_job_id == job.id).limit(1)):
                 raise HTTPException(403, "只能查看自己的或已保存记录的识别任务")
         response.headers['Cache-Control'] = 'no-store'

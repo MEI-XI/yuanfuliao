@@ -5,43 +5,55 @@ const props = defineProps<{
   groups: { key: number; images: number[]; fields: { material_name: string } }[]
   activeIndex: number
   selectedImage?: number
+  selectedKeys?: number[]
+  selectionEnabled?: boolean
   disabled?: boolean
 }>()
 const emit = defineEmits<{
   select: [index: number]
-  merge: [index: number]
+  merge: [from: number, to: number]
+  toggleSelection: [key: number]
   reorder: [from: number, to: number]
   preview: [index: number, imageId: number]
 }>()
 
 const list = ref<HTMLElement | null>(null)
 const hintId = useId()
-const dragging = ref<{ key: number; pointerId: number; target: number } | null>(null)
+type DropTarget = { kind: 'merge'; index: number } | { kind: 'reorder'; index: number; side: 'before' | 'after' }
+const dragging = ref<{ key: number; pointerId: number; target: DropTarget | null } | null>(null)
+const keyboardMerge = ref<{ key: number; target: number } | null>(null)
 const announcement = ref('')
 
-function targetAt(clientY: number) {
+function targetAt(clientX: number, clientY: number): DropTarget | null {
+  const bounds = list.value?.getBoundingClientRect()
+  if (!bounds || clientX < bounds.left || clientX > bounds.right || clientY < bounds.top || clientY > bounds.bottom) return null
   const rows = Array.from(list.value?.querySelectorAll<HTMLElement>('.group-tab') || [])
-  let target = 0
-  let distance = Infinity
-  rows.forEach((row, index) => {
+  for (const [index, row] of rows.entries()) {
     const rect = row.getBoundingClientRect()
-    const nextDistance = Math.abs(clientY - (rect.top + rect.height / 2))
-    if (nextDistance < distance) { target = index; distance = nextDistance }
-  })
-  return target
+    if (clientY < rect.top + rect.height * .2) return { kind: 'reorder', index, side: 'before' }
+    if (clientY <= rect.bottom - rect.height * .2) return { kind: 'merge', index }
+    if (clientY <= rect.bottom) return { kind: 'reorder', index, side: 'after' }
+  }
+  return null
 }
 
-function startDrag(event: PointerEvent, key: number, index: number) {
+function startDrag(event: PointerEvent, key: number) {
   if (props.disabled || !event.isPrimary || event.button !== 0 || !(event.currentTarget instanceof HTMLElement)) return
   event.preventDefault()
   event.currentTarget.focus()
   event.currentTarget.setPointerCapture(event.pointerId)
-  dragging.value = { key, pointerId: event.pointerId, target: index }
+  keyboardMerge.value = null
+  dragging.value = { key, pointerId: event.pointerId, target: null }
 }
 
 function moveDrag(event: PointerEvent) {
   if (dragging.value?.pointerId !== event.pointerId) return
-  dragging.value.target = targetAt(event.clientY)
+  dragging.value.target = targetAt(event.clientX, event.clientY)
+  const target = dragging.value.target
+  if (target?.kind === 'merge' && props.groups[target.index]?.key !== dragging.value.key) {
+    announcement.value = `松开合并到记录 ${target.index + 1}`
+  } else if (target?.kind === 'reorder') announcement.value = `松开放到记录 ${target.index + 1} ${target.side === 'before' ? '之前' : '之后'}`
+  else announcement.value = '移动到其他分组中心合并，边缘排序；在列表外松开取消'
 }
 
 function reorder(from: number, to: number) {
@@ -53,29 +65,85 @@ function reorder(from: number, to: number) {
 function finishDrag(event: PointerEvent) {
   if (dragging.value?.pointerId !== event.pointerId) return
   const from = props.groups.findIndex(group => group.key === dragging.value?.key)
-  const to = targetAt(event.clientY)
+  const target = targetAt(event.clientX, event.clientY)
   dragging.value = null
-  reorder(from, to)
+  if (!target) return
+  if (target.kind === 'merge') requestMerge(from, target.index)
+  else {
+    const insertion = target.index + (target.side === 'after' ? 1 : 0)
+    reorder(from, insertion > from ? insertion - 1 : insertion)
+  }
 }
 
 function cancelDrag(event: PointerEvent) {
   if (dragging.value?.pointerId === event.pointerId) dragging.value = null
 }
+
+function requestMerge(from: number, to: number) {
+  if (props.disabled || from < 0 || to < 0 || to >= props.groups.length || from === to) return
+  emit('merge', from, to)
+  announcement.value = `已请求将记录 ${from + 1} 合并到记录 ${to + 1}`
+}
+
+function mergeTarget(index: number) {
+  if (keyboardMerge.value) return keyboardMerge.value.target === index
+  return dragging.value?.target?.kind === 'merge' && dragging.value.target.index === index && props.groups[index]?.key !== dragging.value.key
+}
+
+function dropEdge(index: number, side: 'before' | 'after') {
+  return dragging.value?.target?.kind === 'reorder' && dragging.value.target.index === index && dragging.value.target.side === side
+}
+
+function handleKey(event: KeyboardEvent, key: number, index: number) {
+  if (props.disabled) return
+  if (event.key === 'Escape') {
+    dragging.value = null
+    keyboardMerge.value = null
+    announcement.value = '已取消移动或合并'
+    event.preventDefault()
+    return
+  }
+  if (event.key.toLowerCase() === 'm' && props.groups.length > 1) {
+    event.preventDefault()
+    keyboardMerge.value = { key, target: index === props.groups.length - 1 ? index - 1 : index + 1 }
+  } else if (keyboardMerge.value?.key === key) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const target = keyboardMerge.value.target
+      keyboardMerge.value = null
+      requestMerge(index, target)
+      return
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    event.preventDefault()
+    const step = event.key === 'ArrowUp' ? -1 : 1
+    let target = keyboardMerge.value.target + step
+    if (target === index) target += step
+    if (target >= 0 && target < props.groups.length) keyboardMerge.value.target = target
+  } else {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault()
+      reorder(index, index + (event.key === 'ArrowUp' ? -1 : 1))
+    }
+    return
+  }
+  announcement.value = `合并目标为记录 ${keyboardMerge.value.target + 1}，上下键选择，回车合并，Esc 取消`
+}
 </script>
 
 <template>
   <section class="batch-groups" aria-label="批量记录排序">
-    <div class="groups-heading"><strong>图片分组</strong><span aria-hidden="true">拖动排序</span><span :id="hintId" class="sr-only">拖动手柄调整顺序，也可使用上下方向键</span></div>
+    <div class="groups-heading"><strong>图片分组</strong><span aria-hidden="true">拖到组内合并，边缘排序</span><span :id="hintId" class="sr-only">拖动手柄到分组中心合并，到边缘排序。上下键排序；按 M 选择合并目标，上下键切换目标，回车确认，Esc 取消。</span></div>
     <ol ref="list" class="group-list" aria-label="图片分组">
       <li v-for="(entry, index) in groups" :key="entry.key" class="group-tab"
         :class="{ selected: index === activeIndex, dragging: dragging?.key === entry.key,
-          'drop-before': dragging && dragging.target === index && index < groups.findIndex(group => group.key === dragging?.key),
-          'drop-after': dragging && dragging.target === index && index > groups.findIndex(group => group.key === dragging?.key) }">
+          'merge-target': mergeTarget(index), 'drop-before': dropEdge(index, 'before'), 'drop-after': dropEdge(index, 'after') }">
         <div class="group-header">
-          <button class="drag-handle" :disabled="disabled" :aria-label="`拖动记录 ${index + 1} 排序`" :aria-describedby="hintId"
-            @pointerdown="startDrag($event, entry.key, index)" @pointermove="moveDrag" @pointerup="finishDrag"
+          <input v-if="selectionEnabled" class="group-checkbox" type="checkbox" :aria-label="`选择分组 ${index + 1}`" :checked="selectedKeys?.includes(entry.key) || false" :disabled="disabled" @click.stop @change="emit('toggleSelection', entry.key)">
+          <button class="drag-handle" :disabled="disabled" :aria-label="`拖动记录 ${index + 1} 排序`" :aria-describedby="hintId" title="拖到组内合并，边缘排序；按 M 选择合并目标"
+            @pointerdown="startDrag($event, entry.key)" @pointermove="moveDrag" @pointerup="finishDrag"
             @pointercancel="cancelDrag" @lostpointercapture="cancelDrag"
-            @keydown.up.prevent="reorder(index, index - 1)" @keydown.down.prevent="reorder(index, index + 1)">
+            @keydown="handleKey($event, entry.key, index)" @blur="keyboardMerge = null">
             <span aria-hidden="true">⠿</span>
           </button>
           <div class="group-details">
@@ -92,7 +160,7 @@ function cancelDrag(event: PointerEvent) {
             <span>{{ photoIndex + 1 }}</span>
           </button>
         </div>
-        <button v-if="index > 0" class="text-button merge-button" :disabled="disabled" @click="emit('merge', index)">合并到上一组</button>
+        <span v-if="mergeTarget(index)" class="merge-indicator" aria-hidden="true">{{ keyboardMerge ? '回车合并到此组' : '松开合并到此组' }}</span>
       </li>
     </ol>
     <span class="sr-only" role="status" aria-live="polite">{{ announcement }}</span>
@@ -108,10 +176,13 @@ function cancelDrag(event: PointerEvent) {
 .group-tab { display: block; min-width: 0; padding: 5px; position: relative; white-space: normal; background: white; border: 1px solid var(--line, #dce5e9); border-radius: 6px; transition: background .12s; }
 .group-tab.selected { border-color: var(--teal, #087f8c); background: #f2fafa; }
 .group-tab.dragging { opacity: .55; }
+.group-tab.merge-target { border-color: #087f8c; background: #d4f2eb; box-shadow: 0 0 0 2px #087f8c; }
+.merge-indicator { position: absolute; left: 2px; right: 2px; bottom: 2px; padding: 3px 1px; background: #087f8c; color: white; border-radius: 3px; font-size: 11px; text-align: center; pointer-events: none; }
 .group-tab.drop-before::before, .group-tab.drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 3px; background: var(--teal, #087f8c); border-radius: 2px; }
 .group-tab.drop-before::before { top: -6px; }
 .group-tab.drop-after::after { bottom: -6px; }
 .group-header { display: flex; align-items: flex-start; min-width: 0; }
+.group-checkbox { flex: 0 0 14px; width: 14px; min-height: 14px; height: 14px; margin: 11px 3px 0 0; padding: 0; }
 .drag-handle { flex: 0 0 28px; width: 28px; min-height: 36px; padding: 0; border-color: transparent; background: transparent; color: #567f8a; cursor: grab; touch-action: none; user-select: none; font-size: 22px; }
 .dragging .drag-handle { cursor: grabbing; }
 .group-details { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
@@ -123,7 +194,6 @@ function cancelDrag(event: PointerEvent) {
 .group-image.active { border-color: var(--teal, #087f8c); box-shadow: 0 0 0 1px var(--teal, #087f8c); }
 .group-image img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .group-image span { position: absolute; right: 1px; bottom: 1px; min-width: 14px; padding: 1px 3px; border-radius: 3px 0 2px 0; background: #edf4f5; color: #496974; font-size: 10px; }
-.merge-button { margin-left: 26px; padding: 4px 0; font-size: 11px; }
 .drag-handle:disabled { cursor: default; opacity: .4; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 600px) {
@@ -132,11 +202,10 @@ function cancelDrag(event: PointerEvent) {
   .groups-heading strong { font-size: 12px; }
   .groups-heading > span[aria-hidden] { display: none; }
   .group-tab { padding: 3px; }
-  .drag-handle { flex-basis: 24px; width: 24px; min-height: 40px; font-size: 21px; }
+  .drag-handle { flex-basis: 18px; width: 18px; min-height: 40px; font-size: 21px; }
   .group-select { min-height: 40px; font-size: 11px; }
   .group-name { font-size: 10px; }
   .group-images { gap: 4px; margin-left: 11px; padding-left: 8px; }
   .group-image { width: 52px; height: 54px; }
-  .merge-button { margin-left: 0; width: 100%; font-size: 10px; padding: 5px 0; }
 }
 </style>

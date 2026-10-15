@@ -16,11 +16,12 @@ class Credentials(Input):
 
 
 class UserCreate(Credentials):
-    role: Literal["admin", "user"] = "user"
+    role: Literal["superadmin", "admin", "user"] = "user"
 
 
 class UserChange(Input):
-    role: Literal["admin", "user"] | None = None
+    username: str | None = Field(default=None, min_length=1, max_length=80)
+    role: Literal["superadmin", "admin", "user"] | None = None
     active: bool | None = None
     password: str | None = Field(default=None, min_length=10, max_length=128)
 
@@ -85,6 +86,21 @@ class RecordCreate(Input):
 
 class VersionInput(Input):
     version: int = Field(ge=1)
+
+
+class RecordVersion(VersionInput):
+    id: int = Field(ge=1)
+
+
+class BatchVoidInput(Input):
+    records: list[RecordVersion] = Field(min_length=1, max_length=200)
+
+    @field_validator('records')
+    @classmethod
+    def unique_records(cls, value):
+        if len({item.id for item in value}) != len(value):
+            raise ValueError('不能重复选择同一条记录')
+        return value
 
 
 class BatchRecordCreate(Input):

@@ -5,7 +5,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi", "uvicorn", "sqlalchemy", "psycopg[binary]", "alembic",
   "pydantic-settings", "python-multipart", "pillow", "openpyxl",
-  "python-docx", "docxtpl", "httpx", "argon2-cffi"
+  "python-docx", "docxtpl", "httpx", "argon2-cffi", "cryptography"
 ]
 
 [project.optional-dependencies]

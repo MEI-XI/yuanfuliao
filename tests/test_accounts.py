@@ -4,7 +4,7 @@ from conftest import bootstrap
 def test_first_install_creates_admin_and_closes_setup(client):
     assert client.get("/api/setup").json() == {"required": True}
     administrator = bootstrap(client)
-    assert administrator["role"] == "admin"
+    assert administrator["role"] == "superadmin"
     assert client.get("/api/me").json()["username"] == "admin"
     assert client.get("/api/setup").json() == {"required": False}
     response = client.post("/api/setup", json={"username": "intruder", "password": "other-password-123"})
@@ -32,4 +32,4 @@ def test_account_maintenance_cannot_remove_the_last_active_administrator(client)
     admin = bootstrap(client)
     assert client.patch(f'/api/users/{admin["id"]}', json={"role": "user"}).status_code == 409
     assert client.patch(f'/api/users/{admin["id"]}', json={"active": False}).status_code == 409
-    assert client.get('/api/me').json()['role'] == 'admin'
+    assert client.get('/api/me').json()['role'] == 'superadmin'
