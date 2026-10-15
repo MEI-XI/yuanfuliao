@@ -104,3 +104,12 @@ def test_worker_can_list_records_across_companies_and_filter_by_creator(client):
     assert len({record['ledger_id'] for record in response.json()}) == 2
     assert {'id': administrator['id'], 'username': 'admin'} in client.get('/api/people').json()
     assert client.get('/api/users').status_code == 403
+def test_sampling_items_stay_manual_when_selecting_and_changing_scheme(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    scheme = client.post('/api/schemes', json={'name': '人工抽检方案', 'items': [{'name': '含量', 'standard': '≥98%'}]}).json()
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'inspection_enabled': True, 'scheme_id': scheme['id']}).json()
+    assert record['fields']['sampling_items'] == ''
+    changed = client.patch(f'/api/records/{record["id"]}', json={'version': record['version'], 'fields': {'sampling_items': '人工指定'}}).json()
+    changed = client.patch(f'/api/records/{record["id"]}', json={'version': changed['version'], 'scheme_id': scheme['id']}).json()
+    assert changed['fields']['sampling_items'] == '人工指定'

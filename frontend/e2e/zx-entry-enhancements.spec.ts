@@ -26,13 +26,14 @@ test('识别补入报告字段，候选值在对应输入框确认，人工内�
     const response = await route.fetch()
     const job = await response.json()
     await route.fulfill({ response, json: { ...job, local_status: 'done', cloud_status: 'done',
-      fields: { material_name: '甘氨酸', specification: '25kg/袋', packaging: '纸塑袋', batch_number: 'A260114', basis: 'GB25542', certificates: '合格证', received_quantity: '10袋' },
+      fields: { material_name: '甘氨酸', specification: '25kg/袋', packaging: '纸塑袋', batch_number: 'A260114', basis: 'GB25542', certificates: '合格证', received_quantity: '10袋', sampling_items: '含量' },
       cloud_fields: {}, cloud_warnings: [{ field: 'expiry_date', message: '云端日期格式不正确，请人工核对填写' }],
       conflicts: { company_name: ['甲供应商', '乙生产商'] }, review_suggestions: { fields: {}, conflicts: {}, sources: [] },
     } })
   })
   await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
   await page.getByRole('button', { name: '开始识别', exact: true }).click()
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('')
   await expect(page.getByLabel('包装', { exact: true })).toHaveValue('纸塑袋')
   await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('A260114')
   await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('GB25542')
@@ -99,6 +100,11 @@ test('共享包装可修改和另存，批号默认反斜杠，开启检验时�
   await expect(page.getByLabel('包装', { exact: true })).toHaveValue('纸塑复合袋')
   await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('\\')
   await expect(page.getByRole('combobox', { name: '检验标准方案', exact: true })).toHaveValue(String(scheme.id))
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('')
+  await page.getByLabel('抽检项目', { exact: true }).fill('人工抽检')
+  await page.getByRole('combobox', { name: '检验标准方案', exact: true }).selectOption('')
+  await page.getByRole('combobox', { name: '检验标准方案', exact: true }).selectOption(String(scheme.id))
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('人工抽检')
   await expect(page.getByLabel('项目', { exact: true })).toHaveValue('色泽')
   await page.getByLabel('包装', { exact: true }).fill('手工包装')
   await page.getByLabel('产品批号', { exact: true }).fill('B-26')

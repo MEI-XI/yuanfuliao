@@ -48,7 +48,8 @@ const records = ref<CheckRecord[]>([])
 const selectedIds = ref<number[]>([])
 const previewIds = ref<number[]>([])
 function openPreview(recordIds: number[]) { if (recordIds.length) previewIds.value = recordIds }
-const filter = reactive({ text: '', status: '', from: '', to: '', mine: false, creator: 0 })
+const filter = reactive({ text: '', status: '', from: '', to: '', mine: false, creator: 0, inspection: '', ledger: 0 })
+function clearRecordFilters() { Object.assign(filter, { text: '', status: '', from: '', to: '', mine: false, creator: 0, inspection: '', ledger: 0 }) }
 const editing = ref<CheckRecord | null>(null)
 function updateAttachmentRecord(metadata: Pick<CheckRecord, 'status' | 'checker_id' | 'checked_at' | 'updated_at'> & { record_version: number }) {
   const record = editing.value || group.value?.savedRecord
@@ -153,16 +154,13 @@ async function saveSchemeInfo() {
 const availableSchemes = computed(() => standards.value)
 const maintainedItemKey = ref('')
 function removeInspectionItem(index: number) {
-  const previousNames = items.value.map(item => item.name).filter(Boolean).join('、')
   items.value.splice(index, 1)
-  if (fields.value.sampling_items === previousNames) fields.value.sampling_items = items.value.map(item => item.name).filter(Boolean).join('、')
 }
 const maintainedItems = computed(() => standards.value.flatMap(scheme => scheme.items.map((item, index) => ({ key: `${scheme.id}:${index}`, label: `${scheme.name} / ${item.name} / ${item.standard}`, item }))))
 function addMaintainedItem() {
   const choice = maintainedItems.value.find(entry => entry.key === maintainedItemKey.value)
   if (!choice) return
   items.value.push({ ...choice.item, result: '', conclusion: '' })
-  fields.value.sampling_items = items.value.map(item => item.name).filter(Boolean).join('、')
   maintainedItemKey.value = ''
 }
 const groupingSuggestions = computed(() => groups.value.flatMap((entry, index) => {
@@ -183,7 +181,6 @@ function replaceScheme(schemeId: number | null) {
   group.value.schemeId = schemeId; group.value.schemeChanged = true
   group.value.items = scheme ? scheme.items.map(i => ({ ...i, result: '', conclusion: '' })) : []
   items.value = group.value.items
-  fields.value.sampling_items = items.value.map(i => i.name).filter(Boolean).join('、')
 }
 function chooseMaterial(event: Event) {
   if (!(event.target instanceof HTMLSelectElement) || !group.value) return
@@ -350,7 +347,9 @@ const textFields: { key: keyof Pick<Fields, 'material_name' | 'specification' | 
   { key: 'contact', label: '联系方式' }, { key: 'shelf_life', label: '保质期' }, { key: 'received_quantity', label: '接收数量' },
 ]
 const filteredRecords = computed(() => records.value.filter(r =>
-  (!filter.text || [r.fields.material_name, r.fields.company_name].some(v => v.includes(filter.text))) &&
+  (!filter.text.trim() || [r.fields.material_name, r.fields.company_name, r.fields.specification, r.fields.notes, String(r.id)].some(v => v.toLowerCase().includes(filter.text.trim().toLowerCase()))) &&
+  (!allCompanies.value || !filter.ledger || r.ledger_id === filter.ledger) &&
+  (!filter.inspection || r.inspection_enabled === (filter.inspection === 'inspected')) &&
   (!filter.status || r.status === filter.status) && (!filter.mine || r.creator_id === user.value?.id) && (!filter.creator || r.creator_id === filter.creator) &&
   (!filter.from || (r.fields.arrival_date || '') >= filter.from) && (!filter.to || (!!r.fields.arrival_date && r.fields.arrival_date <= filter.to)),
 ))
@@ -676,6 +675,7 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
       // Checked corrections take precedence only while the destination is blank.
       const sources = [job.review_suggestions.fields, ...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
       for (const proposals of sources) for (const [key, value] of Object.entries(proposals)) {
+        if (key === 'sampling_items') continue
         if (value === null || value === '' || (Array.isArray(value) && !value.length)) continue
         if (key.endsWith('_source')) continue
         if (reportOcrKeys.has(key)) {
@@ -773,7 +773,7 @@ async function download(kind: 'xlsx' | 'docx') {
       <nav class="breadcrumb"><button @click="view = 'home'; ledger = null">公司台账</button><span>/</span><span>{{ allCompanies ? '全部台账' : ledger?.name }}</span></nav>
       <div class="page-heading"><div><h1>原辅料查验记录</h1><p class="muted">查看全部记录，核对与修改自己的记录。</p></div><button v-if="!allCompanies" class="primary" @click="openEditor()">上传与录入</button></div>
       <section class="table-panel">
-        <div class="filters"><label class="search-label">查找记录<input v-model="filter.text" type="search" placeholder="物料名称、供应商或生产商"></label><label>状态<select v-model="filter.status"><option value="">全部状态</option><option value="pending">待核对</option><option value="checked">已核对</option></select></label><label>到货日期从<input v-model="filter.from" type="date"></label><label>到<input v-model="filter.to" type="date"></label><label>创建人<select v-model="filter.creator"><option :value="0">所有人员</option><option v-for="person in people" :key="person.id" :value="person.id">{{ person.username }}</option></select></label><label class="checkbox-label"><input v-model="filter.mine" type="checkbox">我创建的</label></div>
+        <div class="filters"><label class="search-label">查找记录<input v-model="filter.text" type="search" placeholder="物料、供应商、规格、备注或记录编号"></label><label>状态<select v-model="filter.status"><option value="">全部状态</option><option value="pending">待核对</option><option value="checked">已核对</option></select></label><label>到货日期从<input v-model="filter.from" type="date"></label><label>到<input v-model="filter.to" type="date"></label><label>创建人<select v-model="filter.creator"><option :value="0">所有人员</option><option v-for="person in people" :key="person.id" :value="person.id">{{ person.username }}</option></select></label><label>检验状态<select v-model="filter.inspection" aria-label="筛选检验状态"><option value="">全部</option><option value="inspected">检验</option><option value="uninspected">未检验</option></select></label><label v-if="allCompanies">公司台账<select v-model="filter.ledger" aria-label="筛选公司台账"><option :value="0">全部公司</option><option v-for="company in ledgers" :key="company.id" :value="company.id">{{ company.name }}</option></select></label><label class="checkbox-label"><input v-model="filter.mine" type="checkbox">我创建的</label><button @click="clearRecordFilters">清空筛选</button></div>
         <p class="muted">先勾选需要导出的记录。Excel 按公司分表；多条 Word 每条一份报告，打包为 ZIP 下载。</p><div class="table-actions"><span>共 {{ filteredRecords.length }} 条 · 已选 {{ selectedVisible.length }} 条</span><div><button @click="selectedIds = filteredRecords.filter(r => r.status !== 'void').map(r => r.id)">全选当前记录</button><button @click="selectedIds = []">清空选择</button><button v-if="administrator" class="danger-button" :disabled="busy || !selectedVisible.length" @click="voidSelected">批量作废</button><button :disabled="busy || !selectedVisible.length" @click="openPreview(selectedVisible.map(record => record.id))">预览 / 打印</button><button :disabled="busy || !selectedVisible.length" @click="download('xlsx')">导出 Excel</button><button :disabled="busy || !selectedVisible.length" @click="download('docx')">导出 Word</button></div></div>
         <div class="table-scroll"><table class="ledger-table"><thead><tr><th>选择</th><th v-if="allCompanies" :aria-sort="sortDirection('ledger')"><button class="sort-heading" aria-label="按公司台账排序" @click="toggleSort('ledger')">公司台账 <span aria-hidden="true">{{ sort?.key === 'ledger' ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th v-for="column in ledgerColumns" :key="column.key" :aria-sort="sortDirection(column.key)"><button class="sort-heading" :aria-label="`按${column.label}排序`" @click="toggleSort(column.key)">{{ column.label }} <span aria-hidden="true">{{ sort?.key === column.key ? (sort.ascending ? '↑' : '↓') : '↕' }}</span></button></th><th>操作</th></tr></thead><tbody><tr v-for="record in tableRecords" :key="record.id"><td><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="record.status === 'void'" :aria-label="`选择记录${record.id}`"></td><td v-if="allCompanies">{{ ledgers.find(l => l.id === record.ledger_id)?.name }}</td><td>{{ record.fields.arrival_date || '—' }}</td><td class="material-cell">{{ record.fields.material_name || '未填写物料' }}</td><td class="dates-cell">{{ record.fields.production_dates.join('、') || '—' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ record.fields.received_quantity || '—' }}</td><td><span class="inspection-status" :class="{ enabled: record.inspection_enabled }">{{ record.inspection_enabled ? '检验' : '未检验' }}</span></td><td><span class="status" :class="record.status">{{ statusText[record.status] }}</span></td><td><button class="text-button" @click="openPreview([record.id])">查看</button><button class="text-button" @click="openEditor(record)">{{ record.status !== 'void' && (administrator || user.id === record.creator_id) ? '核对 / 编辑' : '查看记录' }}</button></td></tr></tbody></table></div>
         <div v-if="!filteredRecords.length" class="empty">暂无记录。点击“上传与录入”开始。</div>

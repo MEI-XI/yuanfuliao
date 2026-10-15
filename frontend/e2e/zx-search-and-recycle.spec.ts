@@ -1,0 +1,66 @@
+import { expect, test, type Page } from '@playwright/test'
+
+async function login(page: Page) {
+  if ((await (await page.request.get('/api/setup')).json()).required) await page.request.post('/api/setup', { data: { username: 'admin', password: 'browser-test-password' } })
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.getByRole('button', { name: '退出', exact: true })).toBeVisible()
+}
+
+test('台账和回收站按检验及日期筛选，管理员可确认永久删除', async ({ page }) => {
+  await login(page)
+  const name = `筛选台账${Date.now()}`
+  const ledger = await (await page.request.post('/api/ledgers', { data: { name } })).json()
+  const records = []
+  for (const [material, inspection, date] of [['筛选甲', true, '2026-01-14'], ['筛选乙', false, '2026-02-14']]) {
+    records.push(await (await page.request.post(`/api/ledgers/${ledger.id}/records`, { data: { inspection_enabled: inspection, fields: { material_name: material, arrival_date: date } } })).json())
+  }
+  await page.reload()
+  await page.getByRole('button', { name: `进入${name}` }).click()
+  await page.getByLabel('筛选检验状态', { exact: true }).selectOption('inspected')
+  await expect(page.getByRole('row').filter({ hasText: '筛选甲' })).toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: '筛选乙' })).toHaveCount(0)
+  for (const record of records) await page.request.post(`/api/records/${record.id}/void`, { data: { version: record.version } })
+  await page.getByRole('button', { name: '回收站', exact: true }).click()
+  await page.getByLabel('筛选检验状态', { exact: true }).selectOption('uninspected')
+  await expect(page.getByRole('row').filter({ hasText: '筛选甲' })).toHaveCount(0)
+  const row = page.getByRole('row').filter({ hasText: '筛选乙' })
+  await expect(row).toBeVisible()
+  await page.getByLabel('回收到货日期从', { exact: true }).fill('2026-03-01')
+  await expect(row).toHaveCount(0)
+  await page.getByRole('button', { name: '清空筛选', exact: true }).click()
+  await expect(row).toBeVisible()
+  await page.screenshot({ path: '../tmp/recycle-filters-desktop.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.screenshot({ path: '../tmp/recycle-filters-mobile.png', fullPage: true })
+  page.once('dialog', dialog => dialog.dismiss())
+  await row.getByRole('button', { name: '永久删除', exact: true }).click()
+  await expect(row).toBeVisible()
+  page.once('dialog', dialog => dialog.accept())
+  await row.getByRole('button', { name: '永久删除', exact: true }).click()
+  await expect(row).toHaveCount(0)
+  expect((await page.request.get(`/api/records/${records[1].id}`)).status()).toBe(404)
+})
+
+test('操作日志组合筛选并清空条件，按筛选结果显示数量', async ({ page }) => {
+  await login(page)
+  const ledger = await (await page.request.post('/api/ledgers', { data: { name: `日志${Date.now()}` } })).json()
+  await page.getByRole('button', { name: '管理与公共资料', exact: true }).click()
+  await page.getByRole('button', { name: '操作日志', exact: true }).click()
+  await page.getByLabel('日志操作人', { exact: true }).fill('admin')
+  await page.getByLabel('日志操作类型', { exact: true }).selectOption({ label: '创建台账' })
+  await page.getByLabel('日志操作对象', { exact: true }).fill('/api/ledgers')
+  await page.getByRole('button', { name: '筛选日志', exact: true }).click()
+  await expect(page.getByRole('row').filter({ hasText: '创建台账' }).first()).toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: '登录' })).toHaveCount(0)
+  await page.screenshot({ path: '../tmp/audit-filters-desktop.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.screenshot({ path: '../tmp/audit-filters-mobile.png', fullPage: true })
+  await page.getByLabel('日志操作对象', { exact: true }).fill(`/absent/${ledger.id}`)
+  await page.getByRole('button', { name: '筛选日志', exact: true }).click()
+  await expect(page.getByText('共 0 条 · 第 1 页', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '清空筛选', exact: true }).click()
+  await expect(page.getByRole('row').filter({ hasText: '登录' }).first()).toBeVisible()
+})

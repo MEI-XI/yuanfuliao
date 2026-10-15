@@ -101,6 +101,22 @@ def _validate(data, extension):
 
 
 def register_report_attachment_routes(app, db, current_user, get_record, record_view, append_history):
+    @app.post('/api/reports/preview')
+    def preview_unsaved_report(file: UploadFile, user: User = Depends(current_user)):
+        filename = _filename(file.filename)
+        data = file.file.read(MAX_REPORT_SIZE + 1)
+        if len(data) > MAX_REPORT_SIZE:
+            raise HTTPException(413, '单个报告文件不能超过20 MiB')
+        extension = Path(filename).suffix.lower()
+        _validate(data, extension)
+        headers = {'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store'}
+        if extension in OFFICE_EXTENSIONS:
+            from app.previewing import office_pdf
+            return Response(office_pdf(data, extension.lstrip('.')), media_type='application/pdf', headers=headers)
+        if extension == '.txt':
+            return PlainTextResponse(_text(data), headers=headers)
+        return Response(data, media_type=MEDIA_TYPES[extension], headers=headers)
+
     def editable(record_id, version, user, session):
         record = session.scalar(select(Record).where(Record.id == record_id).with_for_update())
         if record is None or record_expired(record):

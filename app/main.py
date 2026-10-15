@@ -288,8 +288,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if material and not fields["material_name"]:
             fields["material_name"] = " ".join(filter(None, [material.name, material.model]))
         items = [i.model_dump() for i in body.items] if body.items is not None else [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
-        if "sampling_items" not in body.fields.model_fields_set:
-            fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
         report = body.report.model_dump(mode="json")
         if material and 'packaging' not in body.report.model_fields_set:
             report['packaging'] = material.packaging
@@ -390,7 +388,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 item.report = item.report | {'basis': scheme.name if scheme else ''}
             item.scheme_name = scheme.name if scheme else ""
             item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
-            item.fields = item.fields | {"sampling_items": "、".join(i["name"] for i in item.items)}
         if body.fields is not None:
             item.fields = item.fields | body.fields.model_dump(mode="json", exclude_unset=True)
         if body.items is not None:

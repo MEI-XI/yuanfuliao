@@ -25,6 +25,38 @@ def run_label(client, ledger, texts, cloud_enabled=False):
     return job
 
 
+@pytest.mark.parametrize('texts,production,expiry', [
+    (['20270113', '20260114'], ['2026-01-14'], '2027-01-13'),
+    (['2027/01/13  2026.01.14', '电话：20250101', '批号：20240101', '2026/10/15 09:40'], ['2026-01-14'], '2027-01-13'),
+    (['20260114', '保质期：12个月'], ['2026-01-14'], '2027-01-13'),
+    (['生产日期：2026.01.14', '20270113'], ['2026-01-14'], '2027-01-13'),
+    (['20260230', '20261301', '12320250101123'], [], None),
+    (['生产日期：2026.01.14', '生产日期：2026.02.14'], ['2026-01-14', '2026-02-14'], None),
+])
+def test_unlabelled_date_numbers_fill_earliest_production_and_latest_expiry(client, texts, production, expiry):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), texts)
+    assert job['fields'].get('production_dates', []) == production
+    assert job['fields'].get('expiry_date') == expiry
+
+
+def test_unlabelled_dates_across_photos_are_combined_before_assigning_fields(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    first = run_label(client, ledger, ['20260114'])
+    second = run_label(client, ledger, ['20270113'])
+    readings = iter([['20260114'], ['20270113']])
+    client.app.state.scan_image = lambda path: {'texts': next(readings), 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': first['image_ids'] + second['image_ids'], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        job = client.get(f'/api/recognition/{job["id"]}').json()
+        if job['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert job['fields']['production_dates'] == ['2026-01-14']
+    assert job['fields']['expiry_date'] == '2027-01-13'
+
+
 def test_explicit_label_fields_include_packaging_batch_standard_and_delivery_details(client):
     bootstrap(client)
     job = run_label(client, new_ledger(client), [

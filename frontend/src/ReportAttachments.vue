@@ -108,6 +108,30 @@ async function showPreview(attachment: Attachment) {
   } finally { if (request === previewRequest) previewLoading.value = false }
 }
 
+async function showPendingPreview(file: File) {
+  clearPreview()
+  const request = previewRequest
+  previewName.value = file.name; previewError.value = ''; previewOpen.value = true; previewLoading.value = true
+  try {
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    if (['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(extension || '')) {
+      preview.value = { kind: extension === 'pdf' ? 'pdf' : 'image', url: URL.createObjectURL(file) }
+    } else {
+      const body = new FormData(); body.append('file', file)
+      const response = await raw('/reports/preview', { method: 'POST', body })
+      if (response.headers.get('content-type')?.startsWith('text/plain')) {
+        const text = await response.text()
+        if (request === previewRequest) preview.value = { kind: 'text', text }
+      } else {
+        const blob = await response.blob()
+        if (request === previewRequest) preview.value = { kind: 'pdf', url: URL.createObjectURL(blob) }
+      }
+    }
+  } catch (cause) {
+    if (request === previewRequest) previewError.value = cause instanceof Error ? cause.message : '报告预览失败'
+  } finally { if (request === previewRequest) previewLoading.value = false }
+}
+
 function fileSize(size: number) {
   return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`
 }
@@ -122,7 +146,7 @@ function fileSize(size: number) {
     </div>
     <p v-if="recordId === null || pendingFiles.length" class="muted">已选文件随当前记录保存上传；关闭或刷新页面前请先保存。</p>
     <ul v-if="pendingFiles.length" class="report-list">
-      <li v-for="(file, index) in pendingFiles" :key="index"><div class="report-details"><strong>{{ file.name }}</strong><span class="muted">{{ fileSize(file.size) }} · 待上传</span></div><button v-if="editable" type="button" :aria-label="`移除待上传报告 ${file.name}`" @click="emit('filesChanged', pendingFiles.filter((_, position) => position !== index))">移除</button></li>
+      <li v-for="(file, index) in pendingFiles" :key="index"><div class="report-details"><strong>{{ file.name }}</strong><span class="muted">{{ fileSize(file.size) }} · 待上传</span></div><button type="button" :aria-label="`查看待上传报告 ${file.name}`" @click="showPendingPreview(file)">查看</button><button v-if="editable" type="button" :aria-label="`移除待上传报告 ${file.name}`" @click="emit('filesChanged', pendingFiles.filter((_, position) => position !== index))">移除</button></li>
     </ul>
     <div>
       <p v-if="editable" class="muted report-formats">支持图片、PDF、Word、Excel和文本，每个文件不超过20 MiB。上传或删除后需重新核对记录。</p>

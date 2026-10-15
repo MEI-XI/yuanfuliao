@@ -22,6 +22,16 @@ for (const mode of ['单条', '批量', '失败重试', '批量失败重试', '�
   await expect(page.getByLabel('上传报告文件', { exact: true })).toHaveCount(1)
   await page.getByLabel('上传报告文件', { exact: true }).setInputFiles({ name: '新增报告.png', mimeType: 'image/png', buffer: mode === '批量无效附件' ? Buffer.from('invalid image') : await readFile(path.resolve('../tests/fixtures/label.png')) })
   await expect(page.getByText('新增报告.png', { exact: true })).toBeVisible()
+  if (mode === '单条') {
+    await page.getByRole('button', { name: '查看待上传报告 新增报告.png', exact: true }).click()
+    await expect(page.getByRole('dialog').getByAltText('新增报告.png')).toBeVisible()
+    await page.getByRole('button', { name: '关闭报告预览', exact: true }).click()
+    await page.getByLabel('上传报告文件', { exact: true }).setInputFiles({ name: '未保存报告.txt', mimeType: 'text/plain', buffer: Buffer.from('待保存报告的中文内容') })
+    await page.getByRole('button', { name: '查看待上传报告 未保存报告.txt', exact: true }).click()
+    await expect(page.getByRole('dialog')).toContainText('待保存报告的中文内容')
+    await page.getByRole('button', { name: '关闭报告预览', exact: true }).click()
+    await page.getByRole('button', { name: '移除待上传报告 未保存报告.txt', exact: true }).click()
+  }
   expect(await (await page.request.get(`/api/ledgers/${ledger.id}/records`)).json()).toHaveLength(0)
   if (mode.includes('失败重试')) {
     let rejected = false

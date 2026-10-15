@@ -25,6 +25,29 @@ def void_record(client, record):
     return response.json()
 
 
+@pytest.mark.parametrize('role', ['admin', 'superadmin'])
+def test_permanent_delete_requires_admin_current_version_and_void_record(client, role):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    active = create_record(client, ledger)
+    recycled = void_record(client, create_record(client, ledger))
+    path = f'/api/recycle-bin/{recycled["id"]}'
+    client.post('/api/users', json={'username': 'reader', 'password': 'reader-password'})
+    client.post('/api/users', json={'username': 'manager', 'password': 'manager-password', 'role': 'admin'})
+    client.post('/api/login', json={'username': 'reader', 'password': 'reader-password'})
+    assert client.delete(path, params={'version': recycled['version']}).status_code == 403
+    username, password = ('manager', 'manager-password') if role == 'admin' else ('admin', 'test-password-123')
+    client.post('/api/login', json={'username': username, 'password': password})
+    assert client.delete(f'/api/recycle-bin/{active["id"]}', params={'version': active['version']}).status_code == 409
+    assert client.delete(path, params={'version': recycled['version'] - 1}).status_code == 409
+    assert client.delete(path, params={'version': recycled['version']}).status_code == 204
+    assert client.get(f'/api/records/{recycled["id"]}').status_code == 404
+    assert client.get(f'/api/records/{active["id"]}').status_code == 200
+    client.post('/api/login', json={'username': 'admin', 'password': 'test-password-123'})
+    audit = client.get('/api/audit-logs').json()['items']
+    assert any(row['action'] == '永久删除记录' and row['details']['record_id'] == recycled['id'] for row in audit)
+
+
 def test_void_records_only_appear_in_recycle_bin_with_company_filter(client):
     bootstrap(client)
     first = new_ledger(client)

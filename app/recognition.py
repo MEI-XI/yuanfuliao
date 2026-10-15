@@ -69,7 +69,35 @@ class LocalScanner:
             return evidence
 
 
-def parse_texts(texts, boxes=None, conflicts=None):
+def fill_numeric_dates(fields, texts, conflicts):
+    if conflicts.get('production_dates'):
+        return
+    date_pattern = r'(?<!\d)(20\d{2})[年./-](\d{1,2})[月./-](\d{1,2})(?!\d)'
+    compact_pattern = r'(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)'
+    # Unlabelled printed date numbers follow the user's earlier/later rule.
+    # Preserve explicit labels; reject invalid dates, identifiers and camera times.
+    unlabelled_dates = set()
+    for raw_line in texts:
+        if re.search(r'生产日期|保质|有效|失效|到期|检验日期|到货|收货|批号|电话|联系|许可|标准|邮编|\d{1,2}[:：]\d{2}', raw_line):
+            continue
+        for match in [*re.finditer(date_pattern, raw_line), *re.finditer(compact_pattern, raw_line)]:
+            try:
+                unlabelled_dates.add(date(*map(int, match.groups())).isoformat())
+            except ValueError:
+                pass
+    dates = sorted(unlabelled_dates)
+    production = fields.get('production_dates', [])
+    expiry_values = [fields['expiry_date']] if fields.get('expiry_date') else conflicts.get('expiry_date', [])
+    if dates and not production:
+        before_expiry = [value for value in dates if not expiry_values or value < min(expiry_values)]
+        if before_expiry:
+            production = [before_expiry[0]]
+            fields['production_dates'] = production
+    if dates and production and not expiry_values and dates[-1] > max(production):
+        fields['expiry_date'] = dates[-1]
+
+
+def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
     """Extract explicit labels and prominent product titles; never infer judgments."""
     fields, companies = {}, {}
     conflicts = conflicts if conflicts is not None else {}
@@ -238,6 +266,8 @@ def parse_texts(texts, boxes=None, conflicts=None):
             fields['material_name'] += ' ' + model
     if production:
         fields['production_dates'] = production
+    if infer_numeric_dates:
+        fill_numeric_dates(fields, texts, conflicts)
     shelf_values = list(dict.fromkeys(shelf_values))
     if len(shelf_values) == 1:
         fields['shelf_life'] = shelf_values[0]
@@ -291,11 +321,11 @@ def parse_texts(texts, boxes=None, conflicts=None):
 def combine_fields(results):
     fields, conflicts = {}, {}
     for result in results:
-        extracted = parse_texts(result['texts'], result.get('boxes'), conflicts)
+        extracted = parse_texts(result['texts'], result.get('boxes'), conflicts, infer_numeric_dates=False)
         additional = {}
         contact_sources = {}
         for supplement in result.get('supplements', []):
-            parsed = parse_texts(supplement['texts'], supplement.get('boxes'), conflicts)
+            parsed = parse_texts(supplement['texts'], supplement.get('boxes'), conflicts, infer_numeric_dates=False)
             if parsed.get('contact') and parsed.get('contact_source'):
                 contact_sources.setdefault(parsed['contact'], set()).add(parsed['contact_source'])
             for key, value in parsed.items():
@@ -322,6 +352,8 @@ def combine_fields(results):
                 conflicts.setdefault(key, [fields[key]])
                 if value not in conflicts[key]:
                     conflicts[key].append(value)
+    all_texts = [line for result in results for evidence in [result, *result.get('supplements', [])] for line in evidence['texts']]
+    fill_numeric_dates(fields, all_texts, conflicts)
     return complete_expiry_fields(fields, conflicts), conflicts
 
 
@@ -371,6 +403,8 @@ def cloud_extract(paths, texts, api_key):
         "batch_number(产品批号), basis(明确印出的执行标准或检验依据), received_quantity(明确标注到货或接收数量), "
         "certificates(明确标注随车证件), arrival_date, inspection_date(YYYY-MM-DD), internal_report, sensory, sampling_items, notes。"
         "缺失字段省略；缺失日期用null，不要空字符串；生产日期缺失用空数组。期限和到期日由后端计算，不自行推算。"
+        "无明确日期标签的数字日期（例如20260114、2026.01.14），按较早日期为生产日期、较晚日期为保质期至；"
+        "只有一个日期时作为生产日期。明确日期标签优先，多个明确的生产日期保留；排除电话、批号及拍照水印。"
         "净含量和单袋规格不是接收数量，不根据包装袋数量推算收货数量。严禁生成本次检验结果或判定结论。"
         "不确定或有多种可能的值不要填入正常字段，放在candidates对象中，如{\"candidates\":{\"company_name\":[\"甲公司\",\"乙公司\"]}}。"
         "原始OCR仅供参考：" + json.dumps(texts, ensure_ascii=False)

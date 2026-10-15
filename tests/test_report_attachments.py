@@ -21,6 +21,18 @@ from test_records import new_ledger
 PDF = b'%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n'
 
 
+def test_unsaved_report_can_be_previewed_without_creating_record(client):
+    bootstrap(client)
+    before = client.get('/api/records').json()
+    response = client.post('/api/reports/preview', files={'file': ('报告.txt', '尚未保存的报告'.encode(), 'text/plain')})
+    assert response.status_code == 200, response.text
+    assert response.text == '尚未保存的报告'
+    assert client.get('/api/records').json() == before
+    assert client.post('/api/reports/preview', files={'file': ('损坏.png', b'bad', 'image/png')}).status_code == 422
+    client.post('/api/logout')
+    assert client.post('/api/reports/preview', files={'file': ('报告.pdf', PDF, 'application/pdf')}).status_code == 401
+
+
 def create_record(client):
     bootstrap(client)
     ledger = new_ledger(client)
@@ -142,7 +154,8 @@ def test_common_report_formats_can_be_uploaded_and_downloaded(client, kind):
 
 
 @pytest.mark.parametrize('kind', ['docx', 'xlsx'])
-def test_office_report_attachment_preview_renders_the_uploaded_document(client, kind):
+@pytest.mark.parametrize('saved', [True, False])
+def test_office_report_attachment_preview_renders_the_uploaded_document(client, kind, saved):
     if not (_office_available(kind) or _libreoffice()):
         pytest.skip('Requires installed Office or LibreOffice')
     record = create_record(client)
@@ -155,12 +168,30 @@ def test_office_report_attachment_preview_renders_the_uploaded_document(client, 
         workbook = Workbook()
         workbook.active['A1'] = '供应商原始报告内容'
         workbook.save(output)
-    attachment = upload(client, record, output.getvalue(), f'报告.{kind}').json()['attachment']
-    preview = client.get(f'/api/reports/{attachment["id"]}/preview')
+    if saved:
+        attachment = upload(client, record, output.getvalue(), f'报告.{kind}').json()['attachment']
+        preview = client.get(f'/api/reports/{attachment["id"]}/preview')
+    else:
+        preview = client.post('/api/reports/preview', files={'file': (f'报告.{kind}', output.getvalue(), 'application/octet-stream')})
+        assert client.get('/api/records').json() == [record]
+        assert client.get(f'/api/records/{record["id"]}/reports').json() == []
     assert preview.status_code == 200, preview.text
     assert preview.headers['content-type'] == 'application/pdf'
-    assert preview.headers['content-disposition'].startswith('inline;')
+    if saved:
+        assert preview.headers['content-disposition'].startswith('inline;')
     assert '供应商原始报告内容' in PdfReader(BytesIO(preview.content)).pages[0].extract_text()
+
+
+def test_permanent_delete_removes_only_recycled_record_report_files(client):
+    record = create_record(client)
+    attachment = upload(client, record).json()['attachment']
+    with Session(client.app.state.engine) as session:
+        path = report_attachment_path(session.get(ReportAttachment, attachment['id']).storage_key)
+    voided = client.post(f'/api/records/{record["id"]}/void', json={'version': 2}).json()
+    assert path.is_file()
+    assert client.delete(f'/api/recycle-bin/{record["id"]}', params={'version': voided['version']}).status_code == 204
+    assert not path.exists()
+    assert client.get(f'/api/reports/{attachment["id"]}/file').status_code == 404
 
 
 def test_void_reports_stay_readable_but_cannot_be_changed(client):
