@@ -13,7 +13,8 @@ if ((Test-Path 'tmp/pg-runtime/pgsql/bin/pg_ctl.exe') -and (Test-Path 'data/post
     & ./tmp/pg-runtime/pgsql/bin/pg_ctl.exe -D data/postgres-local status *> $null
     if ($LASTEXITCODE -ne 0) {
         Start-Process -FilePath (Resolve-Path 'tmp/pg-runtime/pgsql/bin/postgres.exe') -ArgumentList @('-D', (Join-Path (Get-Location) 'data/postgres-local'), '-h', '127.0.0.1', '-p', '55433') -WindowStyle Hidden -RedirectStandardOutput (Join-Path (Get-Location) 'tmp/postgres-local.log') -RedirectStandardError (Join-Path (Get-Location) 'tmp/postgres-local-error.log')
-        for ($attempt = 0; $attempt -lt 15; $attempt++) {
+        # Recovery after an interrupted shutdown can take longer than 15 seconds.
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
             & ./tmp/pg-runtime/pgsql/bin/pg_isready.exe -h 127.0.0.1 -p 55433 -t 1 *> $null
             if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 1
