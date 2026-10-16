@@ -384,7 +384,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
             if body.scheme_id and not scheme:
                 raise HTTPException(422, "检验方案不存在")
-            if item.report.get('basis', '') == item.scheme_name and (body.report is None or 'basis' not in body.report.model_fields_set):
+            if (scheme or item.report.get('basis', '') == item.scheme_name) and (body.report is None or 'basis' not in body.report.model_fields_set):
                 item.report = item.report | {'basis': scheme.name if scheme else ''}
             item.scheme_name = scheme.name if scheme else ""
             item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []

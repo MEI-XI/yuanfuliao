@@ -176,7 +176,7 @@ async function loadLibrary() {
 function replaceScheme(schemeId: number | null) {
   if (!group.value) return
   const scheme = standards.value.find(s => s.id === schemeId)
-  if (!group.value.dirty.has('report.basis') && report.value.basis === group.value.basisAutoValue) report.value.basis = scheme?.name || ''
+  if (scheme || (!group.value.dirty.has('report.basis') && report.value.basis === group.value.basisAutoValue)) report.value.basis = scheme?.name || ''
   group.value.basisAutoValue = scheme?.name || ''
   group.value.schemeId = schemeId; group.value.schemeChanged = true
   group.value.items = scheme ? scheme.items.map(i => ({ ...i, result: '', conclusion: '' })) : []
