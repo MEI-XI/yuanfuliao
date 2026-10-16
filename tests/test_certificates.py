@@ -15,3 +15,16 @@ def test_certificate_choices_remember_saved_text_after_record_is_edited(client):
     assert '原产地证' in options
     assert '自定义合格单' in options
     assert options.count('检疫证') == 1
+
+
+def test_delete_certificate_history_keeps_records_and_does_not_return_on_save(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    record = client.post(f'/api/ledgers/{ledger}/records', json={'fields': {'certificates': '原产地证'}}).json()
+    deleted = client.delete('/api/certificate-options', params={'name': '原产地证'})
+    assert deleted.status_code == 200
+    assert '原产地证' not in deleted.json()
+    assert client.get(f'/api/records/{record["id"]}').json()['fields']['certificates'] == '原产地证'
+    client.patch(f'/api/records/{record["id"]}', json={'version': record['version'], 'fields': record['fields']})
+    assert '原产地证' not in client.get('/api/certificate-options').json()
+    assert client.delete('/api/certificate-options', params={'name': '检疫证'}).status_code == 422

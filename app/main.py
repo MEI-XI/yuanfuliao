@@ -27,7 +27,7 @@ from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Cr
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
-from app.certificates import certificate_options, remember_certificates
+from app.certificates import DEFAULTS, certificate_options, delete_certificate_option, remember_certificates
 
 passwords = PasswordHasher()
 
@@ -436,6 +436,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get('/api/certificate-options')
     def list_certificate_options(user: User = Depends(current_user), session: Session = Depends(db)):
+        return certificate_options(session)
+
+    @app.delete('/api/certificate-options')
+    def remove_certificate_option(name: str, user: User = Depends(current_user), session: Session = Depends(db)):
+        name = name.strip()
+        if not name or name in DEFAULTS:
+            raise HTTPException(422, '只能删除自定义历史选项')
+        delete_certificate_option(session, name)
+        session.commit()
         return certificate_options(session)
 
     @app.get("/api/materials")
