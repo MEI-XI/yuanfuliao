@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 
 from app.models import Base
 from app.report_attachments import ReportAttachment  # Register attachment metadata.
+from app.certificates import CertificateOption  # Register certificate history metadata.
 
 config = context.config
 load_dotenv()

@@ -27,6 +27,7 @@ from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Cr
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
+from app.certificates import certificate_options, remember_certificates
 
 passwords = PasswordHasher()
 
@@ -244,6 +245,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     def append_history(item, actor, action, session):
         session.flush()
+        remember_certificates(session, item.fields.get('certificates', ''))
         session.add(History(record_id=item.id, actor_id=actor.id, action=action, snapshot=jsonable_encoder(record_view(item))))
 
     def editable_record(record_id, version, user, session):
@@ -432,6 +434,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.commit()
         return record_view(item)
 
+    @app.get('/api/certificate-options')
+    def list_certificate_options(user: User = Depends(current_user), session: Session = Depends(db)):
+        return certificate_options(session)
+
     @app.get("/api/materials")
     def materials(user: User = Depends(current_user), session: Session = Depends(db)):
         from app.expiry import normalize_shelf_life
@@ -439,8 +445,19 @@ def create_app(database_url: str | None = None) -> FastAPI:
                  'shelf_life': normalize_shelf_life(m.shelf_life)}
                 for m in session.scalars(select(Material).order_by(Material.id))]
 
+    def unique_catalog_name(session, model, name, entry_id=None):
+        # Serialize name checks across all API writers, including concurrent creates.
+        session.execute(text('SELECT pg_advisory_xact_lock(hashtext(:key))'), {'key': 'catalog-name:' + model.__tablename__})
+        normalized = name.strip().casefold()
+        if not normalized:
+            raise HTTPException(422, '名称不能为空')
+        if any(existing_id != entry_id and existing_name.strip().casefold() == normalized
+               for existing_id, existing_name in session.execute(select(model.id, model.name))):
+            raise HTTPException(409, '存在重名项目，请修改名称后再保存')
+
     @app.post("/api/materials", status_code=201)
     def add_material(body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        unique_catalog_name(session, Material, body.name)
         material = Material(**body.model_dump())
         session.add(material)
         session.commit()
@@ -451,6 +468,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         material = session.get(Material, material_id)
         if not material:
             raise HTTPException(404, "物料不存在")
+        unique_catalog_name(session, Material, body.name, material_id)
         for key, value in body.model_dump().items():
             setattr(material, key, value)
         session.commit()
@@ -464,6 +482,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items} for s in session.scalars(query)]
 
     def save_scheme(body, session, scheme_id=None):
+        unique_catalog_name(session, Scheme, body.name, scheme_id)
         if body.material_id is not None and not session.get(Material, body.material_id):
             raise HTTPException(422, "物料不存在")
         item = session.get(Scheme, scheme_id) if scheme_id else Scheme()
@@ -488,6 +507,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 for p in session.scalars(select(Partner).order_by(Partner.id))]
 
     def save_partner(body, session, partner_id=None):
+        unique_catalog_name(session, Partner, body.name, partner_id)
         item = session.get(Partner, partner_id) if partner_id else Partner()
         if not item:
             raise HTTPException(404, "单位不存在")
