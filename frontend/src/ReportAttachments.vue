@@ -3,7 +3,7 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import { z } from 'zod'
 import { api, raw } from './api'
 
-const props = defineProps<{ recordId: number | null; recordVersion: number | null; editable: boolean }>()
+const props = defineProps<{ recordId: number | null; recordVersion: number | null; editable: boolean; pendingFiles: File[] }>()
 const attachmentSchema = z.object({
   id: z.number(), record_id: z.number(), owner_id: z.number(), filename: z.string(),
   media_type: z.string(), size: z.number(), created_at: z.string(),
@@ -14,7 +14,7 @@ const metadataSchema = z.object({
 })
 type Attachment = z.infer<typeof attachmentSchema>
 type RecordMetadata = z.infer<typeof metadataSchema>
-const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata] }>()
+const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata]; filesChanged: [files: File[]] }>()
 const attachments = ref<Attachment[]>([])
 const loading = ref(false)
 const busy = ref(false)
@@ -55,9 +55,11 @@ async function upload(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   const recordId = props.recordId
-  if (!file || recordId === null || props.recordVersion === null || !props.editable) return
+  if (!file || !props.editable) return
   error.value = ''
   if (file.size > 20 * 1024 * 1024) { error.value = '单个报告文件不能超过20 MiB'; return }
+  if (recordId === null) { emit('filesChanged', [...props.pendingFiles, file]); return }
+  if (props.recordVersion === null) return
   const body = new FormData()
   body.append('file', file)
   body.append('version', String(props.recordVersion))
@@ -106,6 +108,30 @@ async function showPreview(attachment: Attachment) {
   } finally { if (request === previewRequest) previewLoading.value = false }
 }
 
+async function showPendingPreview(file: File) {
+  clearPreview()
+  const request = previewRequest
+  previewName.value = file.name; previewError.value = ''; previewOpen.value = true; previewLoading.value = true
+  try {
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    if (['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(extension || '')) {
+      preview.value = { kind: extension === 'pdf' ? 'pdf' : 'image', url: URL.createObjectURL(file) }
+    } else {
+      const body = new FormData(); body.append('file', file)
+      const response = await raw('/reports/preview', { method: 'POST', body })
+      if (response.headers.get('content-type')?.startsWith('text/plain')) {
+        const text = await response.text()
+        if (request === previewRequest) preview.value = { kind: 'text', text }
+      } else {
+        const blob = await response.blob()
+        if (request === previewRequest) preview.value = { kind: 'pdf', url: URL.createObjectURL(blob) }
+      }
+    }
+  } catch (cause) {
+    if (request === previewRequest) previewError.value = cause instanceof Error ? cause.message : '报告预览失败'
+  } finally { if (request === previewRequest) previewLoading.value = false }
+}
+
 function fileSize(size: number) {
   return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`
 }
@@ -114,16 +140,19 @@ function fileSize(size: number) {
 <template>
   <section class="report-attachments" aria-label="报告附件">
     <div class="reports-heading"><div><h3>报告附件</h3><p class="muted">保存供应商报告、合格证或其他查验资料，可直接查看。</p></div>
-      <label v-if="recordId !== null && editable" class="report-upload" :class="{ disabled: busy || loading }">上传报告
+      <label v-if="editable" class="report-upload" :class="{ disabled: busy || loading }">上传报告
         <input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.rtf" aria-label="上传报告文件" :disabled="busy || loading" @change="upload">
       </label>
     </div>
-    <p v-if="recordId === null" class="muted">先保存记录，再打开记录上传报告附件。</p>
-    <template v-else>
+    <p v-if="recordId === null || pendingFiles.length" class="muted">已选文件随当前记录保存上传；关闭或刷新页面前请先保存。</p>
+    <ul v-if="pendingFiles.length" class="report-list">
+      <li v-for="(file, index) in pendingFiles" :key="index"><div class="report-details"><strong>{{ file.name }}</strong><span class="muted">{{ fileSize(file.size) }} · 待上传</span></div><button type="button" :aria-label="`查看待上传报告 ${file.name}`" @click="showPendingPreview(file)">查看</button><button v-if="editable" type="button" :aria-label="`移除待上传报告 ${file.name}`" @click="emit('filesChanged', pendingFiles.filter((_, position) => position !== index))">移除</button></li>
+    </ul>
+    <div>
       <p v-if="editable" class="muted report-formats">支持图片、PDF、Word、Excel和文本，每个文件不超过20 MiB。上传或删除后需重新核对记录。</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="loading || busy" class="muted" role="status">{{ loading ? '正在读取报告附件…' : '正在保存报告附件…' }}</p>
-      <p v-if="!loading && !attachments.length" class="muted">暂无报告附件</p>
+      <p v-if="!loading && !attachments.length && !pendingFiles.length" class="muted">暂无报告附件</p>
       <ul v-else class="report-list">
         <li v-for="attachment in attachments" :key="attachment.id">
           <button type="button" class="report-thumbnail" :aria-label="`查看报告 ${attachment.filename}`" @click="showPreview(attachment)">
@@ -134,7 +163,7 @@ function fileSize(size: number) {
           <div class="report-actions"><button type="button" @click="showPreview(attachment)">查看</button><a :href="`/api/reports/${attachment.id}/file?download=true`" :download="attachment.filename">下载</a><button v-if="editable" type="button" class="text-button" :disabled="busy" :aria-label="`删除报告 ${attachment.filename}`" @click="remove(attachment)">删除</button></div>
         </li>
       </ul>
-    </template>
+    </div>
   </section>
   <el-dialog v-model="previewOpen" :title="previewName || '报告预览'" width="min(1100px, 96vw)" class="report-preview-dialog" append-to-body>
     <p v-if="previewLoading" class="muted" role="status">正在生成报告预览…</p>

@@ -1,4 +1,5 @@
 """HTTP operation audit; request bodies, cookies and credential values are never read."""
+from datetime import date, datetime, time, timedelta, timezone
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ ACTIONS = {
     'recognize': '发起识别',
     'upload_report': '上传检验报告', 'delete_report': '删除检验报告',
     'preview_export': '预览导出',
+    'delete_recycled_record': '永久删除记录',
 }
 
 
@@ -31,7 +33,7 @@ def register_audit(app, engine, db, current_user):
         actor = getattr(request.state, 'audit_actor', None)
         route = request.scope.get('route')
         name = getattr(route, 'name', '')
-        if name == 'derive_expiry':
+        if name in {'derive_expiry', 'preview_unsaved_report'}:
             return response
         if actor and 200 <= response.status_code < 300 and (
             request.method in ('POST', 'PUT', 'PATCH', 'DELETE') or name == 'reveal_password'
@@ -47,11 +49,29 @@ def register_audit(app, engine, db, current_user):
 
     @app.get('/api/audit-logs')
     def audit_logs(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),
+                   actor: str = '', action: str = '', target: str = '',
+                   from_date: date | None = None, to_date: date | None = None,
                    user: User = Depends(current_user), session: Session = Depends(db)):
         if user.role != 'superadmin':
             raise HTTPException(403, '只有超级管理员可以查看操作日志')
-        rows = session.scalars(select(AuditLog).order_by(AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size))
+        if from_date and to_date and from_date > to_date:
+            raise HTTPException(422, '开始日期不能晚于结束日期')
+        filters = []
+        if actor.strip():
+            filters.append(AuditLog.actor_username.contains(actor.strip(), autoescape=True))
+        if action:
+            filters.append(AuditLog.action == action)
+        if target.strip():
+            filters.append(AuditLog.target.contains(target.strip(), autoescape=True))
+        local_timezone = timezone(timedelta(hours=8))
+        if from_date:
+            filters.append(AuditLog.at >= datetime.combine(from_date, time.min, local_timezone))
+        if to_date:
+            filters.append(AuditLog.at <= datetime.combine(to_date, time.max, local_timezone))
+        rows = session.scalars(select(AuditLog).where(*filters).order_by(AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size))
         return {'items': [{key: getattr(row, key) for key in (
             'id', 'actor_id', 'actor_username', 'at', 'action', 'target', 'status_code', 'details')}
-            for row in rows], 'total': session.scalar(select(func.count()).select_from(AuditLog)),
+            for row in rows], 'total': session.scalar(select(func.count()).select_from(AuditLog).where(*filters)),
+            'actions': list(session.scalars(select(AuditLog.action).distinct().order_by(AuditLog.action))),
+            'actors': list(session.scalars(select(AuditLog.actor_username).distinct().order_by(AuditLog.actor_username))),
             'page': page, 'page_size': page_size}

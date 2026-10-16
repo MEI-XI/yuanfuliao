@@ -25,6 +25,64 @@ def run_label(client, ledger, texts, cloud_enabled=False):
     return job
 
 
+@pytest.mark.parametrize('texts,production,expiry', [
+    (['20270113', '20260114'], ['2026-01-14'], '2027-01-13'),
+    (['2027/01/13  2026.01.14', '电话：20250101', '批号：20240101', '2026/10/15 09:40'], ['2026-01-14'], '2027-01-13'),
+    (['20260114', '保质期：12个月'], ['2026-01-14'], '2027-01-13'),
+    (['生产日期：2026.01.14', '20270113'], ['2026-01-14'], '2027-01-13'),
+    (['20260230', '20261301', '12320250101123'], [], None),
+    (['生产日期：2026.01.14', '生产日期：2026.02.14'], ['2026-01-14', '2026-02-14'], None),
+])
+def test_unlabelled_date_numbers_fill_earliest_production_and_latest_expiry(client, texts, production, expiry):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), texts)
+    assert job['fields'].get('production_dates', []) == production
+    assert job['fields'].get('expiry_date') == expiry
+
+
+def test_unlabelled_dates_across_photos_are_combined_before_assigning_fields(client):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    first = run_label(client, ledger, ['20260114'])
+    second = run_label(client, ledger, ['20270113'])
+    readings = iter([['20260114'], ['20270113']])
+    client.app.state.scan_image = lambda path: {'texts': next(readings), 'boxes': []}
+    job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': first['image_ids'] + second['image_ids'], 'cloud_enabled': False}).json()
+    for _ in range(100):
+        job = client.get(f'/api/recognition/{job["id"]}').json()
+        if job['local_status'] == 'done':
+            break
+        time.sleep(.02)
+    assert job['fields']['production_dates'] == ['2026-01-14']
+    assert job['fields']['expiry_date'] == '2027-01-13'
+
+
+def test_explicit_label_fields_include_packaging_batch_standard_and_delivery_details(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), [
+        '品名：甘氨酸', '规格：25kg/袋', '包装方式：纸塑复合袋', '生产批号：A260114',
+        '执行标准：GB 25542', '到货数量：10袋', '随车证件：检验报告、合格证',
+        '地址：', '河北省石家庄市测试路88号', '净含量：25kg',
+    ])
+    assert job['fields']['packaging'] == '纸塑复合袋'
+    assert job['fields']['batch_number'] == 'A260114'
+    assert job['fields']['basis'] == 'GB25542'
+    assert job['fields']['received_quantity'] == '10袋'
+    assert job['fields']['certificates'] == '检验报告、合格证'
+    assert job['fields']['address'] == '河北省石家庄市测试路88号'
+
+
+def test_uncertain_or_conflicting_explicit_values_are_candidates_not_defaults(client):
+    bootstrap(client)
+    job = run_label(client, new_ledger(client), [
+        '品名：甘氨酸', '包装方式：纸袋', '包装方式：塑料袋',
+        '感官检验：白色粉末', '检验日期：2026.01.14',
+    ])
+    assert job['conflicts']['packaging'] == ['纸袋', '塑料袋']
+    assert job['conflicts']['sensory'] == ['白色粉末']
+    assert job['conflicts']['inspection_date'] == ['2026-01-14']
+
+
 def test_recognition_derives_expiry_from_printed_production_and_duration(client):
     bootstrap(client)
     job = run_label(client, new_ledger(client), ['生产日期：2026.01.14', '保质期：12个月'])

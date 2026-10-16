@@ -115,6 +115,11 @@ def test_plain_report_form_fills_fields_and_all_inspection_rows_without_placehol
     assert result.tables[0].cell(3, 3).text == '2026.01.14'
     assert result.tables[0].cell(4, 3).text == '2026.10.15'
     assert result.tables[0].cell(1, 1).text == '\\'
+    assert result.tables[0].cell(5, 2).text == '其他检验项目依据该公司提供的内检报告为准'
+    for row in result.tables[0].rows[:6]:
+        for cell in row.cells:
+            assert cell.vertical_alignment == 1
+            assert all(paragraph.alignment == 1 for paragraph in cell.paragraphs)
     inspection_table = result.tables[0].cell(6, 0).tables[0]
     assert [cell.text for cell in inspection_table.rows[0].cells] == ['检验项目', '标准规定', '检验结果', '判定结论']
     for row in inspection_table.rows:

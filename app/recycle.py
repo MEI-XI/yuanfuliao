@@ -3,7 +3,7 @@ import logging
 from datetime import timedelta
 from threading import Event, Thread
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Query, Request
 from sqlalchemy import delete, event, select
 from sqlalchemy.orm import Session
 
@@ -84,6 +84,21 @@ class RecycleCleaner:
 
 
 def register_recycle_routes(app, db, current_user, administrator, record_view, append_history):
+    @app.delete('/api/recycle-bin/{record_id}', status_code=204)
+    def delete_recycled_record(record_id: int, request: Request, version: int = Query(..., ge=1),
+                               user: User = Depends(administrator), session: Session = Depends(db)):
+        item = session.scalar(select(Record).where(Record.id == record_id).with_for_update())
+        if item is None:
+            raise HTTPException(404, '记录不存在')
+        if item.status != 'void':
+            raise HTTPException(409, '只有回收站中的记录可以永久删除')
+        if item.version != version:
+            raise HTTPException(409, '记录已被修改，请刷新后重试')
+        request.state.audit_details = {'record_id': item.id, 'ledger_id': item.ledger_id,
+                                       'material_name': item.fields.get('material_name', '')}
+        delete_records(session, [item.id])
+        session.commit()
+
     @app.get('/api/recycle-bin')
     def recycle_bin(ledger_id: int | None = None, user: User = Depends(current_user), session: Session = Depends(db)):
         purge_expired_records(session)

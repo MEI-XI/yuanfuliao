@@ -27,6 +27,7 @@ from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Cr
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
+from app.certificates import DEFAULTS, add_certificate_option, certificate_options, delete_certificate_option, remember_certificates
 
 passwords = PasswordHasher()
 
@@ -244,6 +245,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     def append_history(item, actor, action, session):
         session.flush()
+        remember_certificates(session, item.fields.get('certificates', ''))
         session.add(History(record_id=item.id, actor_id=actor.id, action=action, snapshot=jsonable_encoder(record_view(item))))
 
     def editable_record(record_id, version, user, session):
@@ -288,8 +290,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if material and not fields["material_name"]:
             fields["material_name"] = " ".join(filter(None, [material.name, material.model]))
         items = [i.model_dump() for i in body.items] if body.items is not None else [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
-        if "sampling_items" not in body.fields.model_fields_set:
-            fields["sampling_items"] = "、".join(i["name"] for i in items if i["name"])
         report = body.report.model_dump(mode="json")
         if material and 'packaging' not in body.report.model_fields_set:
             report['packaging'] = material.packaging
@@ -386,11 +386,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
             scheme = session.get(Scheme, body.scheme_id) if body.scheme_id else None
             if body.scheme_id and not scheme:
                 raise HTTPException(422, "检验方案不存在")
-            if item.report.get('basis', '') == item.scheme_name and (body.report is None or 'basis' not in body.report.model_fields_set):
+            if (scheme or item.report.get('basis', '') == item.scheme_name) and (body.report is None or 'basis' not in body.report.model_fields_set):
                 item.report = item.report | {'basis': scheme.name if scheme else ''}
             item.scheme_name = scheme.name if scheme else ""
             item.items = [i | {"result": "", "conclusion": ""} for i in scheme.items] if scheme else []
-            item.fields = item.fields | {"sampling_items": "、".join(i["name"] for i in item.items)}
         if body.fields is not None:
             item.fields = item.fields | body.fields.model_dump(mode="json", exclude_unset=True)
         if body.items is not None:
@@ -435,6 +434,28 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.commit()
         return record_view(item)
 
+    @app.get('/api/certificate-options')
+    def list_certificate_options(user: User = Depends(current_user), session: Session = Depends(db)):
+        return certificate_options(session)
+
+    @app.post('/api/certificate-options')
+    def restore_certificate_option(name: str, user: User = Depends(current_user), session: Session = Depends(db)):
+        name = name.strip()
+        if not name:
+            raise HTTPException(422, '证件名称不能为空')
+        add_certificate_option(session, name)
+        session.commit()
+        return certificate_options(session)
+
+    @app.delete('/api/certificate-options')
+    def remove_certificate_option(name: str, user: User = Depends(current_user), session: Session = Depends(db)):
+        name = name.strip()
+        if not name or name in DEFAULTS:
+            raise HTTPException(422, '只能删除自定义历史选项')
+        delete_certificate_option(session, name)
+        session.commit()
+        return certificate_options(session)
+
     @app.get("/api/materials")
     def materials(user: User = Depends(current_user), session: Session = Depends(db)):
         from app.expiry import normalize_shelf_life
@@ -442,8 +463,19 @@ def create_app(database_url: str | None = None) -> FastAPI:
                  'shelf_life': normalize_shelf_life(m.shelf_life)}
                 for m in session.scalars(select(Material).order_by(Material.id))]
 
+    def unique_catalog_name(session, model, name, entry_id=None):
+        # Serialize name checks across all API writers, including concurrent creates.
+        session.execute(text('SELECT pg_advisory_xact_lock(hashtext(:key))'), {'key': 'catalog-name:' + model.__tablename__})
+        normalized = name.strip().casefold()
+        if not normalized:
+            raise HTTPException(422, '名称不能为空')
+        if any(existing_id != entry_id and existing_name.strip().casefold() == normalized
+               for existing_id, existing_name in session.execute(select(model.id, model.name))):
+            raise HTTPException(409, '存在重名项目，请修改名称后再保存')
+
     @app.post("/api/materials", status_code=201)
     def add_material(body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
+        unique_catalog_name(session, Material, body.name)
         material = Material(**body.model_dump())
         session.add(material)
         session.commit()
@@ -454,6 +486,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         material = session.get(Material, material_id)
         if not material:
             raise HTTPException(404, "物料不存在")
+        unique_catalog_name(session, Material, body.name, material_id)
         for key, value in body.model_dump().items():
             setattr(material, key, value)
         session.commit()
@@ -467,6 +500,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items} for s in session.scalars(query)]
 
     def save_scheme(body, session, scheme_id=None):
+        unique_catalog_name(session, Scheme, body.name, scheme_id)
         if body.material_id is not None and not session.get(Material, body.material_id):
             raise HTTPException(422, "物料不存在")
         item = session.get(Scheme, scheme_id) if scheme_id else Scheme()
@@ -491,6 +525,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 for p in session.scalars(select(Partner).order_by(Partner.id))]
 
     def save_partner(body, session, partner_id=None):
+        unique_catalog_name(session, Partner, body.name, partner_id)
         item = session.get(Partner, partner_id) if partner_id else Partner()
         if not item:
             raise HTTPException(404, "单位不存在")
@@ -624,6 +659,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def job_view(job, session):
         from app.review_feedback import checked_suggestions
         result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+        result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
+        result['conflicts'] = {key: list(values) for key, values in result['conflicts'].items()}
+        for key, values in result['cloud_fields'].get('_candidates', {}).items():
+            result['conflicts'][key] = list(dict.fromkeys(result['conflicts'].get(key, []) + values))
+        result['cloud_fields'] = {key: value for key, value in result['cloud_fields'].items() if not key.startswith('_')}
         result['queue_ahead'] = session.scalar(select(func.count()).select_from(RecognitionJob).where(
             RecognitionJob.id < job.id, RecognitionJob.local_status.in_(['queued', 'running']))) if job.local_status == 'queued' else 0
         result['review_suggestions'] = checked_suggestions(job, session)

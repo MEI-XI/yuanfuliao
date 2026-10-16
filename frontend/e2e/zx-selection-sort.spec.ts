@@ -42,7 +42,7 @@ test('点击表头切换排序，批量作废只影响勾选记录', async ({ pa
   }
   await page.reload()
   await page.getByRole('button', { name: '进入青山科技' }).click()
-  await page.getByPlaceholder('物料名称、供应商或生产商').fill('排序作废')
+  await page.getByLabel('查找记录', { exact: true }).fill('排序作废')
   await page.getByRole('button', { name: '按接收数量排序', exact: true }).click()
   await expect(page.locator('tbody tr').first()).toContainText('排序作废乙')
   await page.getByRole('button', { name: '按接收数量排序', exact: true }).click()

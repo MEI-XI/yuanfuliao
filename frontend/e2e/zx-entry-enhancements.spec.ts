@@ -17,6 +17,67 @@ async function newEntry(page: Page, name: string) {
   await page.getByRole('button', { name: '上传与录入', exact: true }).click()
 }
 
+test('识别补入报告字段，候选值在对应输入框确认，人工内容保留', async ({ page }) => {
+  await login(page)
+  await newEntry(page, `识别候选${Date.now()}`)
+  await page.getByRole('radio', { name: '检验', exact: true }).check()
+  await page.getByLabel('规格', { exact: true }).fill('人工规格')
+  await page.route('**/api/recognition/*', async route => {
+    const response = await route.fetch()
+    const job = await response.json()
+    await route.fulfill({ response, json: { ...job, local_status: 'done', cloud_status: 'done',
+      fields: { material_name: '甘氨酸', specification: '25kg/袋', packaging: '纸塑袋', batch_number: 'A260114', basis: 'GB25542', certificates: '合格证', received_quantity: '10袋', sampling_items: '含量' },
+      cloud_fields: {}, cloud_warnings: [{ field: 'expiry_date', message: '云端日期格式不正确，请人工核对填写' }],
+      conflicts: { company_name: ['甲供应商', '乙生产商'] }, review_suggestions: { fields: {}, conflicts: {}, sources: [] },
+    } })
+  })
+  await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
+  await page.getByRole('button', { name: '开始识别', exact: true }).click()
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('')
+  await expect(page.getByLabel('包装', { exact: true })).toHaveValue('纸塑袋')
+  await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('A260114')
+  await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('GB25542')
+  await expect(page.getByLabel('随车证件', { exact: true })).toHaveValue('合格证')
+  await expect(page.getByLabel('接收数量', { exact: true })).toHaveValue('10袋')
+  await expect(page.getByLabel('规格', { exact: true })).toHaveValue('人工规格')
+  await expect(page.getByLabel('供应商或生产商', { exact: true })).toBeEmpty()
+  await page.getByRole('group', { name: '供应商或生产商识别建议', exact: true }).getByRole('button', { name: '填入：甲供应商', exact: true }).click()
+  await expect(page.getByLabel('供应商或生产商', { exact: true })).toHaveValue('甲供应商')
+  await page.getByRole('group', { name: '规格识别建议', exact: true }).getByRole('button', { name: '填入：25kg/袋', exact: true }).click()
+  await expect(page.getByLabel('规格', { exact: true })).toHaveValue('25kg/袋')
+  await expect(page.getByRole('group', { name: '保质期至识别建议', exact: true })).toContainText('云端日期格式不正确')
+  await page.getByLabel('规格', { exact: true }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: '../tmp/field-candidates-desktop.png' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByLabel('供应商或生产商', { exact: true }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: '../tmp/field-candidates-mobile.png' })
+  await page.getByLabel('产品批号', { exact: true }).fill('\\')
+  await page.getByRole('button', { name: '保存记录', exact: true }).click()
+  await page.getByRole('button', { name: '核对 / 编辑', exact: true }).click()
+  await page.getByRole('button', { name: '开始识别', exact: true }).click()
+  await expect(page.getByRole('button', { name: '开始识别', exact: true })).toBeEnabled()
+  await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('\\')
+})
+
+test('检验项目可逐项移除，剩余结果保存后仍保留', async ({ page }) => {
+  await login(page)
+  const name = `移除项目${Date.now()}`
+  await newEntry(page, name)
+  await page.getByRole('radio', { name: '检验', exact: true }).check()
+  for (const title of ['色泽', '含量']) {
+    await page.getByRole('button', { name: '添加检验项目', exact: true }).click()
+    await page.getByLabel('项目', { exact: true }).last().fill(title)
+    await page.getByLabel('检验结果', { exact: true }).last().fill(title + '结果')
+  }
+  await page.getByRole('button', { name: '移除检验项目 色泽', exact: true }).click()
+  await expect(page.getByLabel('项目', { exact: true })).toHaveValue('含量')
+  await expect(page.getByLabel('检验结果', { exact: true })).toHaveValue('含量结果')
+  await page.getByRole('button', { name: '保存记录', exact: true }).click()
+  await page.getByRole('button', { name: '核对 / 编辑', exact: true }).click()
+  await expect(page.getByLabel('项目', { exact: true })).toHaveValue('含量')
+  await expect(page.getByLabel('检验结果', { exact: true })).toHaveValue('含量结果')
+})
+
 test('共享包装可修改和另存，批号默认反斜杠，开启检验时采用唯一绑定方案', async ({ page }) => {
   await login(page)
   const name = `包装方案${Date.now()}`
@@ -25,7 +86,9 @@ test('共享包装可修改和另存，批号默认反斜杠，开启检验时�
   await page.getByLabel('物料名称', { exact: true }).fill(name)
   await page.getByLabel('型号', { exact: true }).fill('M1')
   await page.getByLabel('包装', { exact: true }).fill('纸塑复合袋')
+  const createdMaterial = page.waitForResponse(response => response.url().endsWith('/api/materials') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '创建物料', exact: true }).click()
+  expect((await createdMaterial).ok()).toBeTruthy()
   const materials = await (await page.request.get('/api/materials')).json()
   const material = materials.find((entry: { name: string }) => entry.name === name)
   const scheme = await (await page.request.post('/api/schemes', { data: { name: name + '标准', material_id: material.id, items: [{ name: '色泽', standard: '白色' }] } })).json()
@@ -37,6 +100,11 @@ test('共享包装可修改和另存，批号默认反斜杠，开启检验时�
   await expect(page.getByLabel('包装', { exact: true })).toHaveValue('纸塑复合袋')
   await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('\\')
   await expect(page.getByRole('combobox', { name: '检验标准方案', exact: true })).toHaveValue(String(scheme.id))
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('')
+  await page.getByLabel('抽检项目', { exact: true }).fill('人工抽检')
+  await page.getByRole('combobox', { name: '检验标准方案', exact: true }).selectOption('')
+  await page.getByRole('combobox', { name: '检验标准方案', exact: true }).selectOption(String(scheme.id))
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('人工抽检')
   await expect(page.getByLabel('项目', { exact: true })).toHaveValue('色泽')
   await page.getByLabel('包装', { exact: true }).fill('手工包装')
   await page.getByLabel('产品批号', { exact: true }).fill('B-26')
@@ -62,9 +130,10 @@ test('核对当前项目后另存标准方案，只保存项目与标准并保�
   await page.getByLabel('标准规定', { exact: true }).fill('≥99%')
   await page.getByLabel('检验结果', { exact: true }).fill('99.8%')
   await page.getByLabel('判定结论', { exact: true }).fill('合格')
+  await page.getByLabel('检验依据', { exact: true }).fill(name)
   await page.getByRole('button', { name: '保存为检验标准方案', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '保存为检验标准方案', exact: true })
-  await expect(dialog.getByLabel('方案名称', { exact: true })).toBeEmpty()
+  await expect(dialog.getByLabel('方案名称', { exact: true })).toHaveValue(name)
   await expect(dialog.getByLabel('方案所属物料', { exact: true }).locator('option:checked')).toHaveText('不绑定物料（通用方案）')
   await expect(dialog.getByLabel('项目名称', { exact: true })).toHaveValue('含量')
   await expect(dialog.getByLabel('标准规定', { exact: true })).toHaveValue('≥99%')

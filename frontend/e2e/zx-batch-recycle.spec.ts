@@ -21,6 +21,8 @@ test('批量保存可勾选核对，方案名称带入依据且人工修改保�
   await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('批量方案甲')
   await page.getByLabel('检验依据', { exact: true }).fill('本次人工依据')
   await page.getByLabel('检验标准方案', { exact: true }).selectOption(String(second.id))
+  await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('批量方案乙')
+  await page.getByLabel('检验依据', { exact: true }).fill('本次人工依据')
   await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('本次人工依据')
   await page.getByRole('button', { name: '记录 2 · 1 张', exact: true }).click()
   await page.getByLabel('物料名称、型号', { exact: true }).fill('批量保存乙')

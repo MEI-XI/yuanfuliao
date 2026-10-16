@@ -110,7 +110,7 @@ def word_bytes(record, template=None):
         "inspection_date": dates_text([report["inspection_date"]]) if report.get("inspection_date") else "",
         "batch_blank": report.get("batch_number", "\\"), "items": [item | {'unit': ''} for item in record.items],
         "inspector": "", "approver": "",
-        "report_reference": "其他检验项目依据该公司提供的内检报告为准" if report.get("internal_report") == "是" else "",
+        "report_reference": "其他检验项目依据该公司提供的内检报告为准",
     }
     from app.report_form import fill_plain_report
     filled = fill_plain_report(source, context)

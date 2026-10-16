@@ -22,10 +22,22 @@ def _align_grid(table):
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
+def _align_report_header(table):
+    for row in table.rows:
+        if row.cells[0].text.strip().startswith('检验项目'):
+            break
+        for cell in row.cells:
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            for paragraph in cell.paragraphs:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
 def align_inspection_tables(source):
     document = Document(BytesIO(source))
     def visit(tables):
         for table in tables:
+            if table.rows and any('检品名称' in cell.text for cell in table.rows[0].cells):
+                _align_report_header(table)
             if table.rows and tuple(cell.text.strip() for cell in table.rows[0].cells) == HEADERS:
                 _align_grid(table)
             for row in table.rows:
@@ -55,6 +67,7 @@ def fill_plain_report(source, context):
         paragraph.clear().add_run(context.get(key) or '')
     table.cell(5, 0).paragraphs[0].clear().add_run('该公司是否提供内检报告：' + (context.get('internal_report') or ''))
     table.cell(5, 2).paragraphs[0].clear().add_run(context.get('report_reference') or '')
+    _align_report_header(table)
     cell = table.cell(6, 0)
     paragraphs = cell.paragraphs
     if len(paragraphs) < 7:

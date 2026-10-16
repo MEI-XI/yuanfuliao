@@ -1,6 +1,43 @@
 from conftest import bootstrap
 
 
+def test_audit_filters_apply_before_pagination_and_use_beijing_dates(client, monkeypatch):
+    from datetime import datetime, timezone
+    from app.models import AuditLog
+    bootstrap(client)
+    client.post('/api/users', json={'username': 'night-worker', 'password': 'worker-password'})
+    client.post('/api/login', json={'username': 'night-worker', 'password': 'worker-password'})
+    # Exactly the start and end of Oct 15 in Beijing, plus neighbouring days.
+    stamps = iter([datetime(2026, 10, 14, 15, 59, 59, tzinfo=timezone.utc),
+                   datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc),
+                   datetime(2026, 10, 15, 15, 59, 59, tzinfo=timezone.utc),
+                   datetime(2026, 10, 15, 16, 0, 0, tzinfo=timezone.utc)])
+    real_init = AuditLog.__init__
+    def stamped_init(self, **kwargs):
+        return real_init(self, **kwargs, at=next(stamps))
+    with monkeypatch.context() as context:
+        context.setattr(AuditLog, '__init__', stamped_init)
+        for _ in range(4):
+            client.post('/api/logout')
+            # Reuse the existing authenticated cookie through a login that is
+            # deliberately outside the timestamp stub in the next iteration.
+            if _ < 3:
+                context.setattr(AuditLog, '__init__', real_init)
+                client.post('/api/login', json={'username': 'night-worker', 'password': 'worker-password'})
+                context.setattr(AuditLog, '__init__', stamped_init)
+    client.post('/api/login', json={'username': 'admin', 'password': 'test-password-123'})
+    filters = {'actor': 'night-worker', 'action': '退出登录', 'target': 'logout',
+               'from_date': '2026-10-15', 'to_date': '2026-10-15', 'page_size': 1}
+    first = client.get('/api/audit-logs', params=filters).json()
+    second = client.get('/api/audit-logs', params=filters | {'page': 2}).json()
+    assert first['total'] == second['total'] == 2
+    assert len(first['items']) == len(second['items']) == 1
+    assert first['items'][0]['id'] != second['items'][0]['id']
+    assert all(row['actor_username'] == 'night-worker' and row['action'] == '退出登录' for row in first['items'] + second['items'])
+    assert client.get('/api/audit-logs', params=filters | {'target': 'missing'}).json()['total'] == 0
+    assert client.get('/api/audit-logs', params={'from_date': '2026-10-16', 'to_date': '2026-10-15'}).status_code == 422
+
+
 def test_superadmin_manages_credentials_and_admin_cannot_escalate(client):
     root = bootstrap(client)
     admin = client.post('/api/users', json={'username': 'manager', 'password': 'manager-password', 'role': 'admin'}).json()

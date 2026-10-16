@@ -1,11 +1,71 @@
 import httpx
 import pytest
 import time
+import json
 from io import BytesIO
 from PIL import Image
 
 from conftest import bootstrap
 from test_records import new_ledger
+from test_recognition import run_label
+
+
+@pytest.mark.parametrize('expiry', ['', '2026-99-99'])
+def test_bad_or_empty_cloud_date_keeps_other_valid_fields(client, monkeypatch, expiry):
+    bootstrap(client)
+    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({
+            'material_name': '甘氨酸', 'contact': '0311-12345678', 'expiry_date': expiry,
+        })}}]})), **kwargs))
+    job = run_label(client, new_ledger(client), ['品名：本地物料'], cloud_enabled=True)
+    assert job['cloud_status'] == 'done', job['cloud_error']
+    assert job['cloud_fields']['material_name'] == '甘氨酸'
+    assert job['cloud_fields']['contact'] == '0311-12345678'
+    assert not job['cloud_fields'].get('expiry_date')
+    if expiry:
+        assert job['cloud_warnings'][0]['field'] == 'expiry_date'
+    else:
+        assert job['cloud_warnings'] == []
+
+
+def test_cloud_report_fields_and_uncertain_candidates_survive_response(client, monkeypatch):
+    bootstrap(client)
+    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
+    real_client = httpx.Client
+    content = {'packaging': '纸塑袋', 'batch_number': 'A260114', 'basis': 'GB25542',
+               'received_quantity': '10袋', 'sensory': '白色粉末',
+               'candidates': {'company_name': ['甲公司', '乙公司']}, 'conclusion': '合格'}
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(content)}}]})), **kwargs))
+    job = run_label(client, new_ledger(client), ['品名：甘氨酸'], cloud_enabled=True)
+    assert job['cloud_fields']['packaging'] == '纸塑袋'
+    assert job['cloud_fields']['batch_number'] == 'A260114'
+    assert job['cloud_fields']['basis'] == 'GB25542'
+    assert job['cloud_fields']['received_quantity'] == '10袋'
+    assert 'sensory' not in job['cloud_fields']
+    assert 'conclusion' not in job['cloud_fields']
+    assert job['conflicts']['sensory'] == ['白色粉末']
+    assert job['conflicts']['company_name'] == ['甲公司', '乙公司']
+
+
+@pytest.mark.parametrize('answer, expected_name, names', [
+    ('识别结果如下：\n```json\n{"material_name":"甘氨酸","expiry_date":""}\n```\n说明：缺失留空。', '甘氨酸', []),
+    ('{"material_name":"甘氨酸","contact":"0311-12345678"}\n补充：\n{"material_name":"赖氨酸","contact":"0311-12345678"}', None, ['甘氨酸', '赖氨酸']),
+])
+def test_cloud_json_with_explanation_and_repeated_answers(client, monkeypatch, answer, expected_name, names):
+    bootstrap(client)
+    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': answer}}]})), **kwargs))
+    job = run_label(client, new_ledger(client), ['品名：本地物料'], cloud_enabled=True)
+    assert job['cloud_status'] == 'done', job['cloud_error']
+    assert job['cloud_fields'].get('material_name') == expected_name
+    if names:
+        assert job['conflicts']['material_name'] == names
+        assert job['cloud_fields']['contact'] == '0311-12345678'
 
 
 def test_cloud_connection_reports_rejected_credentials_without_echoing_key(client, monkeypatch):

@@ -23,7 +23,11 @@ def test_basis_defaults_to_scheme_name_and_keeps_manual_or_explicit_blank(client
     changed = client.patch(f'/api/records/{record["id"]}', json={
         'version': custom['version'], 'scheme_id': first['id'],
     }).json()
-    assert changed['report']['basis'] == '人工依据'
+    assert changed['report']['basis'] == '外观标准'
+    manual = client.patch(f'/api/records/{record["id"]}', json={
+        'version': changed['version'], 'report': {'basis': '选择后手动修改'},
+    }).json()
+    assert manual['report']['basis'] == '选择后手动修改'
     blank = client.post(f'/api/ledgers/{ledger}/records', json={
         'inspection_enabled': True, 'scheme_id': first['id'], 'report': {'basis': ''},
     }).json()

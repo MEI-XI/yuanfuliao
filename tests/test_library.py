@@ -53,7 +53,7 @@ def test_material_schemes_autofill_only_when_unique_and_records_keep_snapshots(c
     first = client.post("/api/schemes", json=scheme_body).json()
     record = client.post(f"/api/ledgers/{ledger}/records", json={"inspection_enabled": True, "material_id": material}).json()
     assert record["items"] == [{"name": "水分", "standard": "≤0.2%", "unit": "%", "result": "", "conclusion": ""}]
-    assert record["fields"]["sampling_items"] == "水分"
+    assert record["fields"]["sampling_items"] == ""
     changed = scheme_body | {"items": [{"name": "水分", "standard": "≤0.3%", "unit": "%"}]}
     assert client.put(f'/api/schemes/{first["id"]}', json=changed).status_code == 200
     assert client.get(f'/api/records/{record["id"]}').json()["items"][0]["standard"] == "≤0.2%"
