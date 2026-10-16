@@ -39,3 +39,9 @@ def delete_certificate_option(session, name):
     key = hashlib.sha256(name.encode()).hexdigest()
     session.execute(insert(CertificateOption).values(key=key, name=name, hidden=True)
                     .on_conflict_do_update(index_elements=['key'], set_={'hidden': True}))
+
+
+def add_certificate_option(session, name):
+    key = hashlib.sha256(name.encode()).hexdigest()
+    session.execute(insert(CertificateOption).values(key=key, name=name, hidden=False)
+                    .on_conflict_do_update(index_elements=['key'], set_={'hidden': False}))

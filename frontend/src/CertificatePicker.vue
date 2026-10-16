@@ -9,18 +9,34 @@ const defaults = ['出厂检验报告', '检疫证', '肉品品质合格证', '�
 const history = ref<string[]>([])
 const error = ref('')
 const deleting = ref(false)
+const adding = ref(false)
+const typedNames = ref<string[]>([])
 const dropdown = ref<HTMLDetailsElement | null>(null)
 function close() { if (dropdown.value) dropdown.value.open = false }
 function outside(event: PointerEvent) {
   if (event.target instanceof Node && !dropdown.value?.contains(event.target)) close()
 }
 const selected = computed(() => [...new Set(props.modelValue.split(/[、,，;；\n]+/).map(value => value.trim()).filter(Boolean))])
-const choices = computed(() => [...new Set([...defaults, ...history.value])])
+const choices = computed(() => [...new Set([...defaults, ...history.value, ...typedNames.value])])
+const newNames = computed(() => selected.value.filter(name => !defaults.includes(name) && !history.value.includes(name)))
+async function addHistory() {
+  if (adding.value || deleting.value) return
+  adding.value = true
+  const names = [...newNames.value]
+  try {
+    for (const name of names) {
+      history.value = await api(`/certificate-options?name=${encodeURIComponent(name)}`, z.array(z.string()), { method: 'POST' })
+    }
+    error.value = ''
+  } catch { error.value = '添加历史选项失败，请重试添加。' }
+  finally { adding.value = false }
+}
 async function removeHistory(name: string) {
-  if (deleting.value) return
+  if (deleting.value || adding.value) return
   deleting.value = true
   try {
     history.value = await api(`/certificate-options?name=${encodeURIComponent(name)}`, z.array(z.string()), { method: 'DELETE' })
+    typedNames.value = typedNames.value.filter(value => value !== name)
     error.value = ''
   } catch { error.value = '历史选项删除失败，请稍后重试。' }
   finally { deleting.value = false }
@@ -30,7 +46,10 @@ function toggle(name: string) {
   emit('update:modelValue', values.join('、'))
 }
 function edit(event: Event) {
-  if (event.target instanceof HTMLInputElement) emit('update:modelValue', event.target.value)
+  if (event.target instanceof HTMLInputElement) {
+    emit('update:modelValue', event.target.value)
+    typedNames.value = event.target.value.split(/[、,，;；\n]+/).map(value => value.trim()).filter(Boolean)
+  }
 }
 async function load() {
   try { history.value = await api('/certificate-options', z.array(z.string())); error.value = '' }
@@ -46,12 +65,12 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
     <details ref="dropdown" @keydown.esc.stop.prevent="close">
     <summary>{{ selected.length ? selected.join('、') : '请选择随车证件（可多选）' }}<span aria-hidden="true">▾</span></summary>
     <div class="certificate-menu">
-    <label>输入或修改证件<input :value="modelValue" aria-label="随车证件" placeholder="多个证件用顿号分隔" @input="edit"></label>
-    <small>勾选下方选项，或直接输入文字；保存记录后可复用。</small>
+    <label>输入或修改证件<input :value="modelValue" aria-label="随车证件" placeholder="多个证件用顿号分隔" @input="edit" @change="addHistory"></label>
+    <small>勾选下方选项，或直接输入文字；结束输入后自动记住。</small>
     <div class="certificate-choices" role="group" aria-label="常用及历史随车证件">
       <div v-for="name in choices" :key="name" class="certificate-option" :class="{ selected: selected.includes(name) }">
         <label><input type="checkbox" :checked="selected.includes(name)" @change="toggle(name)">{{ name }}</label>
-        <button v-if="!defaults.includes(name)" type="button" class="remove-history" :disabled="deleting" :aria-label="`删除历史选项：${name}`" title="删除此历史选项，不修改查验记录" @click.stop="removeHistory(name)">×</button>
+        <button v-if="!defaults.includes(name)" type="button" class="remove-history" :disabled="deleting || adding" :aria-label="`删除历史选项：${name}`" title="删除此历史选项，不修改查验记录" @click.stop="removeHistory(name)">×</button>
       </div>
     </div>
     <p v-if="error" role="status">{{ error }} <button type="button" @click="load">重试</button></p>

@@ -28,3 +28,7 @@ def test_delete_certificate_history_keeps_records_and_does_not_return_on_save(cl
     client.patch(f'/api/records/{record["id"]}', json={'version': record['version'], 'fields': record['fields']})
     assert '原产地证' not in client.get('/api/certificate-options').json()
     assert client.delete('/api/certificate-options', params={'name': '检疫证'}).status_code == 422
+    restored = client.post('/api/certificate-options', params={'name': '原产地证'})
+    assert restored.status_code == 200
+    assert restored.json().count('原产地证') == 1
+    assert client.post('/api/certificate-options', params={'name': '原产地证'}).json().count('原产地证') == 1
