@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
 import { ApiError, api, raw, json, today, userSchema, ledgerSchema, recordSchema, fieldsSchema, reportSchema, jobSchema, type User, type Ledger, type CheckRecord, type Fields, type Item, type Job } from './api'
 import './style.css'
@@ -386,7 +386,11 @@ const tableRecords = computed(() => {
 async function perform(work: () => Promise<void>) {
   if (busy.value) return
   error.value = ''; notice.value = ''; busy.value = true
-  try { await work() } catch (problem) { error.value = problem instanceof Error ? problem.message : '操作失败，请重试' }
+  try { await work() } catch (problem) {
+    error.value = problem instanceof Error ? problem.message : '操作失败，请重试'
+    await nextTick()
+    document.querySelector('[role="alert"]')?.scrollIntoView({ block: 'center' })
+  }
   finally { busy.value = false }
 }
 async function loadLedgers() {

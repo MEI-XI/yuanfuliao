@@ -15,6 +15,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
+from app.validation_messages import validation_error_response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
@@ -83,6 +85,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             engine.dispose()
 
     app = FastAPI(title="原辅料查验", lifespan=lifespan)
+    app.add_exception_handler(RequestValidationError, validation_error_response)
     app.state.engine = engine
 
     def db():
