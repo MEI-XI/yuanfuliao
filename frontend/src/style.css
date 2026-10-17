@@ -22,3 +22,5 @@
 @media(max-width:600px){.topbar{height:auto;min-height:74px;padding:10px 14px;gap:8px}.topbar .account{width:100%;margin-left:0;justify-content:space-between}.topbar .quiet{font-size:12px;padding:6px;min-height:34px}}
 
 .inspection-row .remove-inspection{grid-column:1/-1;justify-self:end;color:#a53636;padding:4px 8px;min-height:32px}
+
+.error { white-space: pre-line; overflow-wrap: anywhere; }
