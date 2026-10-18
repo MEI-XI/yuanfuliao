@@ -173,12 +173,12 @@ def test_checked_corrections_suggest_stable_fields_only_and_with_source(client):
     assert suggestion['fields']['address_source'] == 'manufacturer'
     assert suggestion['sources'][0]['record_id'] == saved['id']
     assert suggestion['sources'][0]['version'] == checked['version']
-    assert not {'production_dates', 'arrival_date', 'received_quantity', 'result', 'sensory'} & suggestion['fields'].keys()
+    assert not {'production_dates', 'arrival_date', 'received_quantity', 'result', 'shelf_life', 'expiry_date'} & suggestion['fields'].keys()
     client.patch(f'/api/records/{saved["id"]}', json={'version': checked['version'], 'fields': {'address': '待重新核对'}})
     assert client.get(f'/api/recognition/{next_job["id"]}').json()['review_suggestions']['fields'] == {}
 
 
-def test_feedback_rejects_ambiguous_contacts_different_specs_and_voided_records(client):
+def test_feedback_uses_latest_material_record_despite_spec_format_and_excludes_voided_records(client):
     bootstrap(client)
     ledger = new_ledger(client)
     texts = ['品名：甘氨酸', '生产商：测试食品有限公司', '规格：25kg/袋']
@@ -191,11 +191,11 @@ def test_feedback_rejects_ambiguous_contacts_different_specs_and_voided_records(
         }).json()
         records.append(client.post(f'/api/records/{saved["id"]}/check', json={'version': saved['version']}).json())
     matched = run_label(client, ledger, texts)
-    assert 'contact' not in matched['review_suggestions']['fields']
-    assert 'contact_source' not in matched['review_suggestions']['fields']
-    assert len(matched['review_suggestions']['conflicts']['contact']) == 2
+    assert matched['review_suggestions']['fields']['contact'] == '0311-22222222'
+    assert matched['review_suggestions']['fields']['contact_source'] == 'manufacturer'
+    assert matched['review_suggestions']['conflicts'] == {}
     different = run_label(client, ledger, texts[:2] + ['规格：20kg/袋'])
-    assert different['review_suggestions']['fields'] == {}
+    assert different['review_suggestions']['sources'][0]['record_id'] == records[1]['id']
     client.post(f'/api/records/{records[0]["id"]}/void', json={'version': records[0]['version']})
     remaining = client.get(f'/api/recognition/{matched["id"]}').json()['review_suggestions']
     assert remaining['fields']['contact'] == '0311-22222222'

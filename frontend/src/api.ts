@@ -40,6 +40,7 @@ const suggestionSchema = z.object({
 }).partial()
 const historyInspectionSchema = z.object({
   items: z.array(itemSchema), report: reportSchema.partial(), scheme_name: z.string(), source_record_id: z.number(),
+  inspection_enabled: z.boolean().default(true), material_id: z.number().nullable().default(null),
 })
 export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
@@ -57,7 +58,9 @@ export const jobSchema = z.object({
     sources: z.array(z.object({ record_id: z.number(), version: z.number(), ledger_name: z.string(), checked_at: z.string() })),
     inspection: historyInspectionSchema.nullable().default(null),
     inspection_choices: z.array(historyInspectionSchema).default([]),
-  }).default({ fields: {}, conflicts: {}, sources: [], inspection: null, inspection_choices: [] }),
+    match_status: z.enum(['waiting', 'not_found', 'ambiguous', 'matched']).default('not_found'),
+    message: z.string().default(''),
+  }).default({ fields: {}, conflicts: {}, sources: [], inspection: null, inspection_choices: [], match_status: 'not_found', message: '' }),
 })
 export type Job = z.infer<typeof jobSchema>
 export const materialDetailsSchema = fieldsSchema.pick({ specification: true, company_name: true, address: true, contact: true, shelf_life: true, address_source: true, contact_source: true }).extend({ packaging: z.string().default('') })

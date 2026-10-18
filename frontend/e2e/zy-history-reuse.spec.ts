@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('历史检验内容只填空白，本次日期数量及人工输入保留', async ({ page }) => {
+test('云端失败后仍自动带入历史，本次日期数量及人工输入保留', async ({ page }) => {
   await page.request.post('/api/setup', { data: { username: 'admin', password: 'browser-test-password' } })
   await page.goto('/')
   await page.getByLabel('账号', { exact: true }).fill('admin')
@@ -14,13 +14,15 @@ test('历史检验内容只填空白，本次日期数量及人工输入保留',
   await page.getByRole('radio', { name: '检验', exact: true }).check()
   await page.getByLabel('检验依据', { exact: true }).fill('本次人工依据')
   await page.getByLabel('接收数量', { exact: true }).fill('8袋')
+  let polls = 0
   await page.route('**/api/recognition/*', async route => {
+    polls++
     const response = await route.fetch()
     const job = await response.json()
     const inspection = { source_record_id: 91, scheme_name: '旧标准', report: { basis: '旧标准', packaging: '纸塑袋', conclusion: '合格' }, items: [{ name: '含量', standard: '≥98.5%', unit: '', result: '99.2%', conclusion: '合格' }] }
-    await route.fulfill({ response, json: { ...job, local_status: 'done', cloud_status: 'disabled',
+    await route.fulfill({ response, json: { ...job, local_status: 'done', cloud_status: polls === 1 ? 'running' : 'failed',
       fields: { material_name: '甘氨酸', production_dates: ['2026-10-01'], shelf_life: '24个月', received_quantity: '6袋' }, cloud_fields: {}, conflicts: {},
-      review_suggestions: { fields: { material_name: '甘氨酸', sensory: '白色粉末' }, conflicts: {}, sources: [{ record_id: 91, version: 2, ledger_name: '公司', checked_at: '2025-01-01T00:00:00Z' }], inspection, inspection_choices: [inspection] },
+      review_suggestions: polls === 1 ? { fields: {}, conflicts: {}, sources: [] } : { fields: { material_name: '甘氨酸', sensory: '白色粉末' }, conflicts: {}, sources: [{ record_id: 91, version: 2, ledger_name: '公司', checked_at: '2025-01-01T00:00:00Z' }], inspection, inspection_choices: [] },
     } })
   })
   await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
@@ -68,4 +70,53 @@ test('英文原文可查看，中文翻译补空白且不覆盖人工输入', as
   await expect(page.getByRole('status', { name: '英文包装识别' })).toContainText('中文翻译')
   await page.getByRole('group', { name: '供应商或生产商识别建议', exact: true }).getByRole('button', { name: '填入：示例食品公司', exact: true }).click()
   await expect(page.getByLabel('供应商或生产商', { exact: true })).toHaveValue('示例食品公司')
+})
+
+test('先识别物料再自动带入最近已核对台账及全部检验项目，无需选择', async ({ page }) => {
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.getByRole('button', { name: '新建公司台账' })).toBeVisible()
+  const ledger = await (await page.request.post('/api/ledgers', { data: { name: '自动整套复用测试' } })).json()
+  for (const suffix of ['旧', '最近']) {
+    const record = await (await page.request.post(`/api/ledgers/${ledger.id}/records`, { data: {
+      inspection_enabled: true,
+      fields: { material_name: '甘氨酸', company_name: suffix + '人工厂家', specification: '25公斤/袋',
+        address: suffix + '人工地址', contact: '人工联系电话', sensory: '白色粉末', sampling_items: '含量、水分',
+        certificates: '出厂检验报告', notes: suffix + '备注', production_dates: ['2025-01-01'],
+        arrival_date: '2025-01-02', shelf_life: '12个月', expiry_date: '2025-12-31', received_quantity: '100袋' },
+      items: [{ name: '含量', standard: '≥98.5%', result: suffix + '结果', conclusion: '合格' },
+        { name: '水分', standard: '≤0.5%', result: '0.2%', conclusion: '合格' }],
+      report: { packaging: '纸塑袋', basis: suffix + '检验依据', internal_report: '是', conclusion: '合格',
+        inspection_date: '2025-01-02', batch_number: 'OLD' },
+    } })).json()
+    expect((await page.request.post(`/api/records/${record.id}/check`, { data: { version: record.version } })).ok()).toBeTruthy()
+  }
+  await page.reload()
+  await page.getByRole('button', { name: '进入自动整套复用测试' }).click()
+  await page.getByRole('button', { name: '上传与录入' }).click()
+  await expect(page.getByRole('radio', { name: '未检验', exact: true })).toBeChecked()
+  await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
+  await page.getByRole('button', { name: '开始识别', exact: true }).click()
+  await expect(page.getByRole('button', { name: '开始识别', exact: true })).toBeEnabled()
+  await expect(page.getByRole('radio', { name: '检验', exact: true })).toBeChecked()
+  await expect(page.getByLabel('供应商或生产商', { exact: true })).toHaveValue('最近人工厂家')
+  await expect(page.getByLabel('规格', { exact: true })).toHaveValue('25公斤/袋')
+  await expect(page.getByLabel('地址', { exact: true })).toHaveValue('最近人工地址')
+  await expect(page.getByLabel('抽检项目', { exact: true })).toHaveValue('含量、水分')
+  await expect(page.getByLabel('检验结果', { exact: true }).first()).toHaveValue('最近结果')
+  await expect(page.getByLabel('检验结果', { exact: true })).toHaveCount(2)
+  await expect(page.getByLabel('检验依据', { exact: true })).toHaveValue('最近检验依据')
+  await expect(page.getByLabel('是否提供内检报告', { exact: true })).toHaveValue('是')
+  await expect(page.getByLabel('生产日期', { exact: true })).toHaveValue('2026.01.14')
+  await expect(page.getByLabel('到货日期', { exact: true })).not.toHaveValue('2025-01-02')
+  await expect(page.getByLabel('检验日期', { exact: true })).not.toHaveValue('2025-01-02')
+  await expect(page.getByLabel('保质期', { exact: true })).toBeEmpty()
+  await expect(page.getByLabel('接收数量', { exact: true })).toBeEmpty()
+  await expect(page.getByLabel('产品批号', { exact: true })).toHaveValue('\\')
+  await expect(page.getByRole('button', { name: '采用此套检验内容' })).toHaveCount(0)
+  await page.getByLabel('检验结果', { exact: true }).first().fill('本次修改')
+  await page.getByRole('button', { name: '保存记录', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '原辅料查验记录', exact: true })).toBeVisible()
 })

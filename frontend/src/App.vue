@@ -62,7 +62,7 @@ const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
 const items = ref<Item[]>([])
 type ExpiryDerivation = { inputKey: string | null; generation: number; changed: boolean; autoShelfLife: string | null; autoExpiryDate: string | null; warnings: string[] }
-type DraftGroup = { pendingReports: File[]; savedRecord: CheckRecord | null; key: number; expiry: ExpiryDerivation; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
+type DraftGroup = { historyAppliedKey: string; pendingReports: File[]; savedRecord: CheckRecord | null; key: number; expiry: ExpiryDerivation; basisAutoValue: string; inspectionEnabled: boolean; images: number[]; fields: Fields; report: z.infer<typeof reportSchema>; items: Item[]; dirty: Set<string>; job: Job | null; jobId: number | null; generation: number; materialId: number | null; schemeId: number | null; schemeChanged: boolean; materialChanged: boolean; requestState: 'idle' | 'submitting' | 'polling' | 'error'; pollError: string }
 let nextGroupKey = 0
 const groups = ref<DraftGroup[]>([])
 const activeGroup = ref(0)
@@ -86,7 +86,7 @@ const showPhoto = ref(true)
 const suggestedFields = computed(() => Object.entries(group.value?.job?.cloud_fields || {}))
 const localSuggestions = computed(() => Object.entries(group.value?.job?.fields || {}))
 const fieldNames: Record<string, string> = { packaging: '包装', batch_number: '产品批号', basis: '检验依据', inspection_date: '检验日期', internal_report: '是否提供内检报告', arrival_date: '到货日期', received_quantity: '接收数量', certificates: '随车证件', sensory: '感官检验', sampling_items: '抽检项目', notes: '备注', material_name: '物料名称、型号', production_dates: '生产日期', specification: '规格', company_name: '供应商或生产商', address: '地址', contact: '联系方式', shelf_life: '保质期', expiry_date: '保质期至', address_source: '地址来源', contact_source: '联系方式来源' }
-function makeGroup(images: number[] = []): DraftGroup { return { pendingReports: [], savedRecord: null, key: ++nextGroupKey, expiry: { inputKey: null, generation: 0, changed: false, autoShelfLife: null, autoExpiryDate: null, warnings: [] }, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
+function makeGroup(images: number[] = []): DraftGroup { return { historyAppliedKey: '', pendingReports: [], savedRecord: null, key: ++nextGroupKey, expiry: { inputKey: null, generation: 0, changed: false, autoShelfLife: null, autoExpiryDate: null, warnings: [] }, basisAutoValue: '', inspectionEnabled: false, images, fields: fieldsSchema.parse({ arrival_date: today() }), report: reportSchema.parse({ inspection_date: today() }), items: [], dirty: new Set(), job: null, jobId: null, generation: 0, materialId: null, schemeId: null, schemeChanged: false, materialChanged: false, requestState: 'idle', pollError: '' } }
 const recognizing = computed(() => groups.value.some(g => g.requestState === 'submitting' || g.requestState === 'polling'))
 const interrupted = computed(() => groups.value.some(g => g.requestState === 'error'))
 const recognitionLabel = computed(() => {
@@ -191,6 +191,7 @@ function chooseMaterial(event: Event) {
   if (!(event.target instanceof HTMLSelectElement) || !group.value) return
   group.value.materialId = Number(event.target.value) || null
   group.value.materialChanged = true
+  group.value.historyAppliedKey = ''; markDirty('material_id')
   const material = catalog.value.find(m => m.id === group.value?.materialId)
   if (material) {
     fields.value.material_name = [material.name, material.model].filter(Boolean).join(' '); markDirty('material_name')
@@ -208,7 +209,7 @@ function chooseMaterial(event: Event) {
 }
 function applyOnlyBoundScheme() {
   const current = group.value
-  if (!current?.inspectionEnabled || !current.materialId || current.items.length || current.schemeId) return
+  if (!current?.inspectionEnabled || current.historyAppliedKey || !current.materialId || current.items.length || current.schemeId) return
   const choices = standards.value.filter(scheme => scheme.material_id === current.materialId)
   if (choices.length === 1) replaceScheme(choices[0]?.id || null)
 }
@@ -306,38 +307,41 @@ function reorderGroups(from: number, to: number) {
   groups.value.splice(to, 0, moved)
   activeGroup.value = Math.max(0, groups.value.findIndex(entry => entry === current))
 }
-function applyReviewSuggestion(key: string, value: unknown) {
-  applySuggestion(key, value)
-  if (key === 'address' || key === 'contact') {
-    const sourceKey = key + '_source'
-    applySuggestion(sourceKey, Reflect.get(group.value?.job?.review_suggestions.fields || {}, sourceKey) || '')
+function applyMatchedHistory(current: DraftGroup, job: Job) {
+  const history = job.review_suggestions
+  const source = history.sources[0]
+  if (!source || !history.inspection) return
+  const key = `${job.id}:${source.record_id}:${source.version}`
+  if (current.historyAppliedKey === key) return
+  current.historyAppliedKey = key
+  const newRecord = !editing.value && !current.savedRecord
+  for (const [field, value] of Object.entries(history.fields)) {
+    if (field.endsWith('_source') || value === '' || value === null || current.dirty.has(field)) continue
+    const existing: unknown = Reflect.get(current.fields, field)
+    if (!newRecord && existing) continue
+    const paired = field === 'address' || field === 'contact'
+    const sourceKey = field + '_source'
+    if (paired && current.dirty.has(sourceKey)) continue
+    const parsed = fieldsSchema.safeParse({ ...current.fields, [field]: value,
+      ...(paired ? { [sourceKey]: Reflect.get(history.fields, sourceKey) || '' } : {}) })
+    if (parsed.success) Object.assign(current.fields, parsed.data)
   }
-}
-type HistoryInspection = NonNullable<Job['review_suggestions']['inspection']>
-function fillHistoryInspection(current: DraftGroup, inspection: HistoryInspection) {
-  if (!current.dirty.has('items')) {
-    if (!current.items.length) current.items.push(...inspection.items.map(item => ({ ...item })))
-    else for (const item of current.items) {
-      const matches = inspection.items.filter(previous => previous.name === item.name && previous.standard === item.standard)
-      if (matches.length === 1 && matches[0]) {
-        if (!item.result) item.result = matches[0].result
-        if (!item.conclusion) item.conclusion = matches[0].conclusion
-      }
-    }
+  const inspection = history.inspection
+  if (!current.dirty.has('items') && (newRecord || !current.items.length)) {
+    current.items.splice(0, current.items.length, ...inspection.items.map(item => ({ ...item })))
+    const scheme = standards.value.find(entry => entry.name === inspection.scheme_name)
+    current.schemeId = scheme?.id || null
+    current.schemeChanged = true
   }
-  for (const key of ['packaging', 'basis', 'conclusion'] as const) {
-    const value = inspection.report[key]
-    if (value && !current.report[key] && !current.dirty.has('report.' + key)) current.report[key] = value
+  for (const field of ['packaging', 'basis', 'internal_report', 'conclusion'] as const) {
+    const value = inspection.report[field]
+    if (value && !current.dirty.has('report.' + field) && (newRecord || !current.report[field])) current.report[field] = value
   }
-}
-function chooseHistoryInspection(inspection: HistoryInspection) {
-  const current = group.value
-  if (!current || busy.value || batchRetry.value || !editable.value) return
-  if (current.items.length && !window.confirm('采用这条历史记录的检验项目、结果及判定结论，将替换当前项目内容。继续吗？')) return
-  current.items.splice(0, current.items.length, ...inspection.items.map(item => ({ ...item })))
-  markDirty('items')
-  fillHistoryInspection(current, inspection)
-  notice.value = `已采用记录 #${inspection.source_record_id} 的历史检验内容，请按本次实际检验核对；检验开关由你选择。`
+  if (newRecord && !current.dirty.has('material_id')) {
+    current.materialId = inspection.material_id
+    current.materialChanged = true
+  }
+  if (newRecord && !current.dirty.has('inspection_enabled')) current.inspectionEnabled = inspection.inspection_enabled
 }
 function applySuggestion(key: string, value: unknown) {
   if (busy.value || batchRetry.value) return
@@ -707,12 +711,12 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
     if (current.generation !== generation) return
     current.job = job
     if (fill && ((!localApplied && job.local_status === 'done') || (!cloudApplied && job.cloud_status === 'done'))) {
-      // Checked corrections take precedence only while the destination is blank.
-      const sources = [job.review_suggestions.fields, ...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
+      // Current-photo values fill blanks. Verified material history is applied below.
+      const sources = [...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
       for (const proposals of sources) for (const [key, value] of Object.entries(proposals)) {
         // Keep English prose as a selectable original; let Chinese translations
         // fill blanks when they arrive. Codes, numbers and dates remain usable.
-        if (job.english_detected && proposals !== job.review_suggestions.fields &&
+        if (job.english_detected &&
             ['material_name', 'company_name', 'address', 'specification', 'packaging', 'sensory', 'notes', 'certificates'].includes(key) &&
             typeof value === 'string' && /[a-z]{3}/i.test(value) && !/[\u4e00-\u9fff]/.test(value)) continue
         if (key === 'sampling_items') continue
@@ -739,10 +743,10 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
           if (parsed.success) Object.assign(current.fields, parsed.data)
         }
       }
-      if (job.review_suggestions.inspection) fillHistoryInspection(current, job.review_suggestions.inspection)
       localApplied ||= job.local_status === 'done'
       cloudApplied ||= job.cloud_status === 'done'
     }
+    if (fill) applyMatchedHistory(current, job)
     if (!jobActive(job)) break
     await new Promise(resolve => setTimeout(resolve, 500))
   } } catch {
@@ -839,17 +843,12 @@ async function download(kind: 'xlsx' | 'docx') {
         <div v-if="showPhoto" class="photo-workspace"><BatchGroups v-if="groups.length > 1 || (!editing && mode === 'batch')" :groups="groups" :active-index="activeGroup" :selected-image="selectedImage" :selected-keys="selectedGroupKeys" :selection-enabled="!editing && mode === 'batch'" :disabled="busy || !!batchRetry" @select="switchGroup" @preview="previewGroup" @merge="mergeGroups" @toggle-selection="toggleGroupSelection" @reorder="reorderGroups" /><div class="image-stage"><div v-if="selectedImage" class="photo-viewer"><img :src="`/api/images/${selectedImage}`" alt="当前包装原图" :style="{ transform: `rotate(${angle}deg)` }" @click="showLarge = true"></div><div v-else class="image-placeholder"><div class="picture-icon">▧</div><p>本条记录暂无图片</p><small>可以先手动填写并保存</small></div><div v-if="selectedImage" class="photo-actions"><button @click="angle += 90">旋转查看</button><button @click="showLarge = true">放大原图</button></div><div class="thumbnails"><div v-for="photo in group?.images || []" :key="photo" class="thumbnail"><button :class="{ active: selectedImage === photo }" @click="selectedImage = photo; angle = 0"><img :src="`/api/images/${photo}`" alt="包装图片缩略图"></button><template v-if="editable"><button class="text-button" @click="removeImage(photo)">移除</button><button v-if="!editing && (group?.images.length || 0) > 1" class="text-button" @click="splitImage(photo)">拆成一组</button><select v-if="!editing && groups.length > 1" aria-label="移动图片到分组" :value="group?.key" @change="imageDestination($event, photo)"><option v-for="(entry, index) in groups" :key="entry.key" :value="entry.key">记录 {{ index + 1 }}</option></select></template></div></div></div></div>
         <div v-if="group?.job" class="recognition-result">
           <section v-if="group.job.review_suggestions.sources.length" class="review-feedback" aria-label="历史复核参考">
-            <h3>已核对记录参考</h3><p>匹配历史物料时仅补入空白，历史检验内容需按本次实际检验核对。日期、保质期、数量、批号和内检报告提供情况不沿用；检验开关仍由人员选择。</p>
+            <h3>{{ group.historyAppliedKey ? '已自动带入历史台账' : '同种物料历史台账' }}</h3>
+            <p v-if="group.historyAppliedKey">本次识别为同种物料，已采用最近一次已核对台账及检验信息，可继续修改，需按本次实际检验核对。人工已填写内容保留；日期、保质期、数量及批号使用本次信息。</p>
+            <p v-else>找到同种物料最近一次已核对记录，当前已保存内容保持不变。</p>
             <p v-for="source in group.job.review_suggestions.sources" :key="source.record_id">来源：{{ source.ledger_name }} · 记录 #{{ source.record_id }} · 版本 {{ source.version }} · {{ new Date(source.checked_at).toLocaleDateString('zh-CN') }} 已核对</p>
-            <div v-for="(value, key) in group.job.review_suggestions.fields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applyReviewSuggestion(key, value)">采用</button></div>
-            <p v-for="(values, key) in group.job.review_suggestions.conflicts" :key="key" class="conflict">历史{{ fieldNames[key] || key }}不一致：{{ values.join(' / ') }}，未自动采用，请核对。</p>
-            <p v-if="group.job.review_suggestions.inspection_choices.length > 1" class="conflict">历史检验内容有多套，未自动带入，请选择本次适用的一套。</p>
-            <details v-for="choice in group.job.review_suggestions.inspection_choices" :key="choice.source_record_id">
-              <summary>检验参考 · 记录 #{{ choice.source_record_id }} · {{ choice.scheme_name || choice.report.basis || '手动检验项目' }}</summary>
-              <p v-for="(item, index) in choice.items" :key="index">{{ item.name }} / {{ item.standard }} / {{ item.result || '结果空白' }} / {{ item.conclusion || '结论空白' }}</p>
-              <button v-if="editable" type="button" :disabled="busy || !!batchRetry" @click="chooseHistoryInspection(choice)">采用此套检验内容</button>
-            </details>
           </section>
+          <p v-else-if="group.job.review_suggestions.message" class="muted" role="status" aria-label="历史匹配状态">{{ group.job.review_suggestions.message }}</p>
           <p v-if="group.job.english_detected" class="notice" role="status" aria-label="英文包装识别">已识别到英文包装。{{ group.job.cloud_status === 'done' ? '中文翻译建议已返回，请对照英文原文确认；未翻译的原文仍可手动选择填入。' : group.job.cloud_status === 'failed' || group.job.cloud_status === 'disabled' ? '中文翻译暂不可用，本地英文原文和字段建议已保留，可直接选择填入或人工翻译。' : '正在请求云端中文翻译；原文保留供核对。' }}</p>
           <details v-if="group.job.evidence.length"><summary>原始识别文字</summary><pre>{{ group.job.evidence.map(e => [e.texts.join('\n'), ...e.supplements.map(s => '局部或倾斜校正识别：\n' + s.texts.join('\n'))].join('\n\n')).join('\n\n') }}</pre></details>
           <details v-if="localSuggestions.length"><summary>本地字段建议</summary><div v-for="[key, value] in localSuggestions" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applySuggestion(key, value)">填入</button></div></details>
@@ -857,10 +856,10 @@ async function download(kind: 'xlsx' | 'docx') {
           <div v-if="suggestedFields.length"><h3>云端建议</h3><p class="muted">按需填入，不自动覆盖人工修改。</p><div v-for="[key, value] in suggestedFields" :key="key" class="suggestion"><span>{{ fieldNames[key] || key }}<strong>{{ formatSuggestion(value) }}</strong></span><button v-if="editable" :disabled="busy || !!batchRetry" @click="applySuggestion(key, value)">填入</button></div></div>
         </div>
       </aside>
-        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">识别仅自动补充空白；已有内容保留，可从识别建议手动填入。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><FieldSuggestions label="到货日期" :values="suggestionsFor('arrival_date')" :warnings="warningsFor('arrival_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('arrival_date', $event)" /><small>默认录入日期，可修改或清空</small></label><template v-for="field in textFields" :key="field.key"><label>{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)" @blur="field.key === 'shelf_life' && normalizeEntryShelfLife()" :aria-label="field.label"><FieldSuggestions :label="field.label" :values="suggestionsFor(field.key)" :warnings="warningsFor(field.key)" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion(field.key, $event)" /></label><label v-if="field.key === 'shelf_life'">保质期至<input v-model="fields.expiry_date" type="date" @input="markDirty('expiry_date')" aria-label="保质期至"><FieldSuggestions label="保质期至" :values="suggestionsFor('expiry_date')" :warnings="warningsFor('expiry_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('expiry_date', $event)" /></label></template><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔" aria-label="生产日期"><FieldSuggestions label="生产日期" :values="suggestionsFor('production_dates')" :warnings="warningsFor('production_dates')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('production_dates', $event)" /></label></div><p v-for="warning in expiryWarnings" :key="warning" class="notice" role="status">{{ warning }}</p></section>
+        <div class="form-panel"><fieldset :disabled="!editable || busy || !!batchRetry" @input="markDirty('manual')" @change="markDirty('manual')"><section class="form-section"><h2>基本信息</h2><p class="muted">匹配同种物料后自动带入最近已核对台账；人工已填内容保留，日期、保质期和数量使用本次信息。</p><button v-if="administrator" type="button" @click="reviewMaterial">保存为物料信息</button><label class="library-selector">选择共享物料<select :value="group?.materialId || ''" @change="chooseMaterial"><option value="">不选择，手动填写</option><option v-for="material in catalog" :key="material.id" :value="material.id">{{ [material.name, material.model].filter(Boolean).join(' ') }}</option></select></label><div class="field-grid"><label>到货日期<input v-model="fields.arrival_date" type="date" aria-label="到货日期"><FieldSuggestions label="到货日期" :values="suggestionsFor('arrival_date')" :warnings="warningsFor('arrival_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('arrival_date', $event)" /><small>默认录入日期，可修改或清空</small></label><template v-for="field in textFields" :key="field.key"><label>{{ field.label }}<input v-model="fields[field.key]" @input="markDirty(field.key)" @blur="field.key === 'shelf_life' && normalizeEntryShelfLife()" :aria-label="field.label"><FieldSuggestions :label="field.label" :values="suggestionsFor(field.key)" :warnings="warningsFor(field.key)" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion(field.key, $event)" /></label><label v-if="field.key === 'shelf_life'">保质期至<input v-model="fields.expiry_date" type="date" @input="markDirty('expiry_date')" aria-label="保质期至"><FieldSuggestions label="保质期至" :values="suggestionsFor('expiry_date')" :warnings="warningsFor('expiry_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('expiry_date', $event)" /></label></template><label class="wide">生产日期<input v-model="productionDates" placeholder="2026.01.14，多个日期用顿号分隔" aria-label="生产日期"><FieldSuggestions label="生产日期" :values="suggestionsFor('production_dates')" :warnings="warningsFor('production_dates')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('production_dates', $event)" /></label></div><p v-for="warning in expiryWarnings" :key="warning" class="notice" role="status">{{ warning }}</p></section>
           <section class="form-section"><h2>选用单位资料</h2><label>共享单位<select v-model="partnerId"><option :value="0">选择供应商或生产商资料</option><option v-for="partner in partners" :key="partner.id" :value="partner.id">{{ partner.name }}（{{ partner.kind === 'supplier' ? '供应商' : '生产商' }}）</option></select></label><div class="button-row"><button :disabled="!partnerId" @click="fillPartner('name')">填入单位名称</button><button :disabled="!partnerId" @click="fillPartner('contact')">填入地址和联系方式</button></div><div class="field-grid"><label>地址来源<select aria-label="地址来源" v-model="fields.address_source" @change="markDirty('address_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label><label>联系方式来源<select aria-label="联系方式来源" v-model="fields.contact_source" @change="markDirty('contact_source')"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商，导出时注明</option></select></label></div></section>
           <section class="form-section"><h2>随车证件与感官检查</h2><div class="field-grid"><div class="wide"><CertificatePicker v-model="fields.certificates" @update:model-value="markDirty('certificates')" /><FieldSuggestions label="随车证件" :values="suggestionsFor('certificates')" :warnings="warningsFor('certificates')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('certificates', $event)" /></div><label class="wide">感官检验<textarea v-model="fields.sensory" @input="markDirty('sensory')" rows="2" placeholder="外包装、感官状态、标签情况；本次手动填写" aria-label="感官检验"></textarea><FieldSuggestions label="感官检验" :values="suggestionsFor('sensory')" :warnings="warningsFor('sensory')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('sensory', $event)" /></label><label class="wide">抽检项目<input v-model="fields.sampling_items" @input="markDirty('sampling_items')" aria-label="抽检项目"><FieldSuggestions label="抽检项目" :values="suggestionsFor('sampling_items')" :warnings="warningsFor('sampling_items')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('sampling_items', $event)" /></label><label class="wide">备注<textarea v-model="fields.notes" @input="markDirty('notes')" rows="2" aria-label="备注"></textarea><FieldSuggestions label="备注" :values="suggestionsFor('notes')" :warnings="warningsFor('notes')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('notes', $event)" /></label></div></section>
-          <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
+          <section v-if="group" class="form-section inspection-mode"><h2>检验</h2><div class="button-row"><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" @change="markDirty('inspection_enabled')" :value="false">未检验</label><label><input v-model="group.inspectionEnabled" type="radio" name="inspection-mode" @change="markDirty('inspection_enabled')" :value="true">检验</label></div><p v-if="!group.inspectionEnabled" class="muted">检验项目与报告信息已收起并锁定，已有内容保留；未检验记录不能导出 Word 报告。</p></section>
           <section v-if="group?.inspectionEnabled" class="form-section"><h2>检验项目</h2><button v-if="administrator" type="button" @click="reviewScheme">保存为检验标准方案</button><label class="library-selector">检验标准方案<select aria-label="检验标准方案" :value="group?.schemeId || ''" @change="chooseScheme"><option value="">不选择方案</option><option v-for="scheme in availableSchemes" :key="scheme.id" :value="scheme.id">{{ scheme.name }}</option></select></label><p v-if="editing" class="muted">保存时采用：{{ editing.scheme_name || '未选择方案' }}，当前项目为保存时的快照。</p><p class="muted">所有物料均可选用任一方案。结果与结论支持选择或输入，可以留空；沿用历史内容后请核对本次结果。</p><div class="button-row"><label>已维护检验项目<select aria-label="已维护检验项目" v-model="maintainedItemKey"><option value="">选择单个项目</option><option v-for="entry in maintainedItems" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label><button type="button" :disabled="!maintainedItemKey" @click="addMaintainedItem">添加选中项目</button></div><div v-for="(item, index) in items" :key="index" class="inspection-row"><label>项目<input v-model="item.name" @input="markDirty('items')"></label><label>标准规定<input v-model="item.standard" @input="markDirty('items')"></label><InspectionChoice v-model="item.result" kind="result" @update:model-value="markDirty('items')" /><InspectionChoice v-model="item.conclusion" kind="conclusion" @update:model-value="markDirty('items')" /><button type="button" class="text-button remove-inspection" :aria-label="`移除检验项目 ${item.name || index + 1}`" @click="removeInspectionItem(index)">移除项目</button></div><button type="button" @click="items.push({ name: '', standard: '', unit: '', result: '', conclusion: '' }); markDirty('items')">添加检验项目</button></section>
           <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging" @input="markDirty('report.packaging')" aria-label="包装"><FieldSuggestions label="包装" :values="suggestionsFor('packaging')" :warnings="warningsFor('packaging')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('packaging', $event)" /></label><label>产品批号<input v-model="report.batch_number" aria-label="产品批号" @input="markDirty('report.batch_number')"><FieldSuggestions label="产品批号" :values="suggestionsFor('batch_number')" :warnings="warningsFor('batch_number')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('batch_number', $event)" /></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><FieldSuggestions label="检验依据" :values="suggestionsFor('basis')" :warnings="warningsFor('basis')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('basis', $event)" /><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date" aria-label="检验日期" @input="markDirty('report.inspection_date')"><FieldSuggestions label="检验日期" :values="suggestionsFor('inspection_date')" :warnings="warningsFor('inspection_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('inspection_date', $event)" /></label><label>是否提供内检报告<select v-model="report.internal_report" aria-label="是否提供内检报告" @change="markDirty('report.internal_report')"><option value="">留空</option><option>是</option><option>否</option></select><FieldSuggestions label="是否提供内检报告" :values="suggestionsFor('internal_report')" :warnings="warningsFor('internal_report')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('internal_report', $event)" /></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2" @input="markDirty('report.conclusion')"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
         </fieldset><ReportAttachments v-if="group" :key="group.key" :pending-files="group.pendingReports" @files-changed="group.pendingReports = $event" :record-id="editing?.id || group.savedRecord?.id || null" :record-version="editing?.version || group.savedRecord?.version || null" :editable="editable && !busy && (!batchRetry || !!group.savedRecord)" @record-changed="updateAttachmentRecord" /></div></div>
