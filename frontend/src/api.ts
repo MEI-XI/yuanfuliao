@@ -38,10 +38,14 @@ const suggestionSchema = z.object({
   packaging: z.string(), batch_number: z.string(), basis: z.string(), inspection_date: z.string().nullable(), internal_report: z.string(),
   arrival_date: z.string().nullable(), received_quantity: z.string(), certificates: z.string(), sensory: z.string(), sampling_items: z.string(), notes: z.string(),
 }).partial()
+const historyInspectionSchema = z.object({
+  items: z.array(itemSchema), report: reportSchema.partial(), scheme_name: z.string(), source_record_id: z.number(),
+})
 export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
   cloud_status: z.enum(['disabled', 'queued', 'running', 'done', 'failed']),
   fields: suggestionSchema, cloud_fields: suggestionSchema,
+  english_detected: z.boolean().default(false),
   evidence: z.array(z.object({ texts: z.array(z.string()), boxes: z.array(z.unknown()),
     supplements: z.array(z.object({ texts: z.array(z.string()), kind: z.string() })).default([]) })),
   conflicts: z.record(z.string(), z.array(z.string())), error: z.string(), cloud_error: z.string(),
@@ -51,7 +55,9 @@ export const jobSchema = z.object({
     fields: suggestionSchema,
     conflicts: z.record(z.string(), z.array(z.string())),
     sources: z.array(z.object({ record_id: z.number(), version: z.number(), ledger_name: z.string(), checked_at: z.string() })),
-  }).default({ fields: {}, conflicts: {}, sources: [] }),
+    inspection: historyInspectionSchema.nullable().default(null),
+    inspection_choices: z.array(historyInspectionSchema).default([]),
+  }).default({ fields: {}, conflicts: {}, sources: [], inspection: null, inspection_choices: [] }),
 })
 export type Job = z.infer<typeof jobSchema>
 export const materialDetailsSchema = fieldsSchema.pick({ specification: true, company_name: true, address: true, contact: true, shelf_life: true, address_source: true, contact_source: true }).extend({ packaging: z.string().default('') })

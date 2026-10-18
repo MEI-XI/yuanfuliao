@@ -1,4 +1,5 @@
-"""Reuse checked packaging corrections without training or copying batch data."""
+"""Reuse checked records while keeping this delivery's dates and quantities."""
+import json
 import re
 
 from sqlalchemy import select
@@ -13,10 +14,12 @@ def identity(fields):
 
 
 def checked_suggestions(job, session):
-    result = {'fields': {}, 'conflicts': {}, 'sources': []}
-    signature = identity(job.fields)
-    if job.local_status != 'done' or signature is None or any(
+    result = {'fields': {}, 'conflicts': {}, 'sources': [], 'inspection': None, 'inspection_choices': []}
+    signatures = {value for value in (identity(job.fields), identity(job.cloud_fields)) if value is not None}
+    if job.local_status != 'done' or not signatures or any(
             key in job.conflicts for key in ('material_name', 'company_name', 'specification')):
+        return result
+    if any(key in job.cloud_fields.get('_candidates', {}) for key in ('material_name', 'company_name', 'specification')):
         return result
     rows = session.execute(select(Record, RecognitionJob, Ledger.name)
         .join(RecognitionJob, Record.recognition_job_id == RecognitionJob.id)
@@ -24,15 +27,25 @@ def checked_suggestions(job, session):
         .where(Record.status == 'checked', RecognitionJob.local_status == 'done', RecognitionJob.id != job.id)
         .order_by(Record.checked_at.desc(), Record.id.desc()))
     candidates = []
+    inspection_snapshots = set()
     for record, original, ledger_name in rows:
         if any(key in original.conflicts for key in ('material_name', 'company_name', 'specification')):
             continue
-        if signature not in (identity(original.fields), identity(record.fields)):
+        if not signatures.intersection((identity(original.fields), identity(original.cloud_fields), identity(record.fields))):
             continue
         candidates.append(record.fields)
         result['sources'].append({'record_id': record.id, 'version': record.version,
                                   'ledger_name': ledger_name, 'checked_at': record.checked_at})
-    for key in ('material_name', 'specification', 'company_name', 'shelf_life', 'address', 'contact'):
+        if record.inspection_enabled:
+            report = {key: record.report[key] for key in ('packaging', 'basis', 'conclusion') if record.report.get(key)}
+            snapshot = {'items': record.items, 'report': report, 'scheme_name': record.scheme_name}
+            fingerprint = json.dumps(snapshot, sort_keys=True, ensure_ascii=False)
+            if (record.items or report) and fingerprint not in inspection_snapshots:
+                inspection_snapshots.add(fingerprint)
+                result['inspection_choices'].append(snapshot | {'source_record_id': record.id})
+    if len(result['inspection_choices']) == 1:
+        result['inspection'] = result['inspection_choices'][0]
+    for key in ('material_name', 'specification', 'company_name', 'address', 'contact', 'certificates', 'sensory', 'sampling_items', 'notes'):
         # Contact/address and their ownership travel together.
         paired = key in {'address', 'contact'}
         values = list(dict.fromkeys((fields[key], fields.get(key + '_source', '') if paired else '')

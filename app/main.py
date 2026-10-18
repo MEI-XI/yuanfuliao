@@ -30,6 +30,7 @@ from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
 from app.certificates import DEFAULTS, add_certificate_option, certificate_options, delete_certificate_option, remember_certificates
+from app.inspection_options import remember_inspection_options, register_inspection_option_routes
 
 passwords = PasswordHasher()
 
@@ -249,6 +250,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def append_history(item, actor, action, session):
         session.flush()
         remember_certificates(session, item.fields.get('certificates', ''))
+        remember_inspection_options(session, item.items)
         session.add(History(record_id=item.id, actor_id=actor.id, action=action, snapshot=jsonable_encoder(record_view(item))))
 
     def editable_record(record_id, version, user, session):
@@ -266,6 +268,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return item
 
     register_recycle_routes(app, db, current_user, administrator, record_view, append_history)
+    register_inspection_option_routes(app, db, current_user)
     from app.report_attachments import register_report_attachment_routes
     register_report_attachment_routes(app, db, current_user, get_record, record_view, append_history)
 
@@ -661,8 +664,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     def job_view(job, session):
         from app.review_feedback import checked_suggestions
+        from app.english_labels import is_english_packaging
         result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
         result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
+        result['english_detected'] = is_english_packaging([line for evidence in job.evidence for line in evidence['texts']])
         result['conflicts'] = {key: list(values) for key, values in result['conflicts'].items()}
         for key, values in result['cloud_fields'].get('_candidates', {}).items():
             result['conflicts'][key] = list(dict.fromkeys(result['conflicts'].get(key, []) + values))

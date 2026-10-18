@@ -51,6 +51,7 @@ def test_cloud_report_fields_and_uncertain_candidates_survive_response(client, m
 
 
 @pytest.mark.parametrize('answer, expected_name, names', [
+    ('{"material_name":"甘氨酸","address":"https://example.test/a//b", // 省略缺失字段\n "packaging":"纸袋",}', '甘氨酸', []),
     ('识别结果如下：\n```json\n{"material_name":"甘氨酸","expiry_date":""}\n```\n说明：缺失留空。', '甘氨酸', []),
     ('{"material_name":"甘氨酸","contact":"0311-12345678"}\n补充：\n{"material_name":"赖氨酸","contact":"0311-12345678"}', None, ['甘氨酸', '赖氨酸']),
 ])
@@ -66,6 +67,9 @@ def test_cloud_json_with_explanation_and_repeated_answers(client, monkeypatch, a
     if names:
         assert job['conflicts']['material_name'] == names
         assert job['cloud_fields']['contact'] == '0311-12345678'
+    if 'https://' in answer:
+        assert job['cloud_fields']['address'] == 'https://example.test/a//b'
+        assert job['cloud_fields']['packaging'] == '纸袋'
 
 
 def test_cloud_connection_reports_rejected_credentials_without_echoing_key(client, monkeypatch):
