@@ -49,15 +49,17 @@ test('批量保存可勾选核对，方案名称带入依据且人工修改保�
   await expect(page.getByRole('row').filter({ hasText: '批量核对乙' })).toContainText('已核对')
 })
 
-test('作废记录移到独立回收站，管理员还原后回到待核对台账', async ({ page }) => {
+test('台账行可直接作废单条记录，取消不变更，回收站还原后回到待核对台账', async ({ page }) => {
   await enter(page)
   await page.getByRole('button', { name: '上传与录入' }).click()
   await page.getByLabel('物料名称、型号', { exact: true }).fill('回收还原样本')
   await page.getByRole('button', { name: '保存并标记已核对' }).click()
   const row = page.getByRole('row').filter({ hasText: '回收还原样本' })
-  await row.getByRole('button', { name: '核对 / 编辑' }).click()
+  page.once('dialog', dialog => dialog.dismiss())
+  await row.getByRole('button', { name: '作废', exact: true }).click()
+  await expect(row).toContainText('已核对')
   page.once('dialog', dialog => dialog.accept())
-  await page.getByRole('button', { name: '作废记录', exact: true }).click()
+  await row.getByRole('button', { name: '作废', exact: true }).click()
   await expect(row).toHaveCount(0)
   await page.getByRole('button', { name: '回收站', exact: true }).click()
   await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
