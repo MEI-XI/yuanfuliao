@@ -28,3 +28,5 @@
 .retention-notice { border: 1px solid #e2b857; border-left: 5px solid #ba7700; background: #fff5d9; color: #704600; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; }
 .retention-notice strong { display: block; font-size: 18px; }
 .retention-notice p { margin: 8px 0 0; font-size: 14px; }
+
+.ledger-table .arrival-date { white-space: nowrap; min-width: 115px; }
