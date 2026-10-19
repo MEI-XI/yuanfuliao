@@ -30,3 +30,11 @@
 .retention-notice p { margin: 8px 0 0; font-size: 14px; }
 
 .ledger-table .arrival-date { white-space: nowrap; min-width: 115px; }
+
+.ledger-page { max-width: 1800px; }
+.ledger-page .ledger-table { min-width: 1280px; }
+.ledger-page .ledger-table th, .ledger-page .ledger-table td { padding: 12px; }
+.ledger-page .ledger-table td { white-space: nowrap; vertical-align: middle; }
+.ledger-page .ledger-table .material-cell, .ledger-page .ledger-table .supplier-cell { white-space: normal; overflow-wrap: anywhere; min-width: 160px; max-width: 280px; }
+.ledger-page .ledger-table td:last-child button { padding: 7px 10px; min-height: 36px; }
+@media (min-width: 601px) { .ledger-page { padding-left: 24px; padding-right: 24px; } }
