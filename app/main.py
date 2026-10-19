@@ -667,6 +667,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         from app.english_labels import is_english_packaging
         result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
         result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
+        from app.party_candidates import merge_party_options
+        result['party_options'] = merge_party_options(job.fields.get('_party_options', {}), job.cloud_fields.get('_party_options', {}))
+        result['fields'] = {key: value for key, value in result['fields'].items() if not key.startswith('_')}
         result['english_detected'] = is_english_packaging([line for evidence in job.evidence for line in evidence['texts']])
         result['conflicts'] = {key: list(values) for key, values in result['conflicts'].items()}
         for key, values in result['cloud_fields'].get('_candidates', {}).items():

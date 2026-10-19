@@ -42,10 +42,12 @@ const historyInspectionSchema = z.object({
   items: z.array(itemSchema), report: reportSchema.partial(), scheme_name: z.string(), source_record_id: z.number(),
   inspection_enabled: z.boolean().default(true), material_id: z.number().nullable().default(null),
 })
+export const partyOptionSchema = z.object({ value: z.string(), source: z.enum(['', 'supplier', 'manufacturer']) })
 export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
   cloud_status: z.enum(['disabled', 'queued', 'running', 'done', 'failed']),
   fields: suggestionSchema, cloud_fields: suggestionSchema,
+  party_options: z.object({ company_name: z.array(partyOptionSchema), address: z.array(partyOptionSchema) }).default({ company_name: [], address: [] }),
   english_detected: z.boolean().default(false),
   evidence: z.array(z.object({ texts: z.array(z.string()), boxes: z.array(z.unknown()),
     supplements: z.array(z.object({ texts: z.array(z.string()), kind: z.string() })).default([]) })),

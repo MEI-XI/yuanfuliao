@@ -13,7 +13,7 @@ import FieldSuggestions from './FieldSuggestions.vue'
 import CertificatePicker from './CertificatePicker.vue'
 import InspectionChoice from './InspectionChoice.vue'
 import { readExportTemplate } from './localTemplates'
-import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice } from './api'
+import { materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, partyOptionSchema, normalizeShelfLife, shelfLifeDayNotice } from './api'
 
 const user = ref<User | null>(null)
 const administrator = computed(() => user.value?.role === 'admin' || user.value?.role === 'superadmin')
@@ -317,6 +317,7 @@ function applyMatchedHistory(current: DraftGroup, job: Job) {
   const newRecord = !editing.value && !current.savedRecord
   for (const [field, value] of Object.entries(history.fields)) {
     if (field.endsWith('_source') || value === '' || value === null || current.dirty.has(field)) continue
+    if ((field === 'company_name' || field === 'address') && (job.conflicts[field]?.length || 0) > 1) continue
     const existing: unknown = Reflect.get(current.fields, field)
     if (!newRecord && existing) continue
     const paired = field === 'address' || field === 'contact'
@@ -345,6 +346,10 @@ function applyMatchedHistory(current: DraftGroup, job: Job) {
 }
 function applySuggestion(key: string, value: unknown) {
   if (busy.value || batchRetry.value) return
+  if (key === 'company_name' || key === 'address') {
+    const option = partyOptionSchema.safeParse(value)
+    if (option.success) value = option.data.value
+  }
   if (reportOcrKeys.has(key)) {
     const parsed = reportSchema.safeParse({ ...report.value, [key]: value })
     if (parsed.success) { Object.assign(report.value, parsed.data); markDirty('report.' + key) }
@@ -361,6 +366,11 @@ function suggestionsFor(key: string): unknown[] {
   const current: unknown = Reflect.get(reportOcrKeys.has(key) ? report.value : fields.value, key)
   const values: unknown[] = [...(job.conflicts[key] || []), ...(job.review_suggestions.conflicts[key] || [])]
   for (const proposals of [job.fields, job.cloud_fields, job.review_suggestions.fields]) values.push(Reflect.get(proposals, key))
+  if (key === 'company_name' || key === 'address') {
+    const options = [...job.party_options[key]]
+    for (const value of values) if (typeof value === 'string' && value && !options.some(option => option.value === value)) options.push({ value, source: '' })
+    return options
+  }
   const unique = new Map<string, unknown>()
   for (const value of values) {
     const display = formatSuggestion(value)
@@ -731,7 +741,7 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
           continue
         }
         const existing: unknown = Reflect.get(current.fields, key)
-        const paired = key === 'address' || key === 'contact'
+        const paired = key === 'contact'
         const sourceKey = key + '_source'
         const source: unknown = Reflect.get(proposals, sourceKey) || ''
         if (paired) {

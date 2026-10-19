@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import { partyOptionSchema } from './api'
 defineProps<{ label: string; values: unknown[]; warnings: string[]; disabled: boolean }>()
 defineEmits<{ choose: [value: unknown] }>()
-function display(value: unknown) { return Array.isArray(value) ? value.join('、') : String(value ?? '') }
+function display(value: unknown) {
+  const option = partyOptionSchema.safeParse(value)
+  if (option.success) return (option.data.source === 'supplier' ? '供应商：' : option.data.source === 'manufacturer' ? '生产商：' : '') + option.data.value
+  return Array.isArray(value) ? value.join('、') : String(value ?? '')
+}
 </script>
 
 <template>

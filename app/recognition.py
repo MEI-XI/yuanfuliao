@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from app.expiry import complete_expiry_fields, normalize_shelf_life
 from app.english_labels import DATE_LABEL, parse_english_labels
 from app.schemas import RecordFields, ReportFields
+from app.party_candidates import apply_party_options, extract_party_options, merge_party_options
 
 OCR_FIELDS = {"material_name", "production_dates", "specification", "company_name", "address", "contact",
               "shelf_life", "expiry_date", "address_source", "contact_source", "arrival_date", "received_quantity",
@@ -318,17 +319,21 @@ def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
                     if line.startswith(('生产', '厂家')):
                         fields['address_source'] = 'manufacturer'
                     break
+    apply_party_options(fields, conflicts, extract_party_options(texts))
     return fields
 
 
 def combine_fields(results):
     fields, conflicts = {}, {}
+    party_options = {}
     for result in results:
         extracted = parse_texts(result['texts'], result.get('boxes'), conflicts, infer_numeric_dates=False)
+        party_options = merge_party_options(party_options, extracted.pop('_party_options', {}))
         additional = {}
         contact_sources = {}
         for supplement in result.get('supplements', []):
             parsed = parse_texts(supplement['texts'], supplement.get('boxes'), conflicts, infer_numeric_dates=False)
+            party_options = merge_party_options(party_options, parsed.pop('_party_options', {}))
             if parsed.get('contact') and parsed.get('contact_source'):
                 contact_sources.setdefault(parsed['contact'], set()).add(parsed['contact_source'])
             for key, value in parsed.items():
@@ -357,6 +362,7 @@ def combine_fields(results):
                     conflicts[key].append(value)
     all_texts = [line for result in results for evidence in [result, *result.get('supplements', [])] for line in evidence['texts']]
     fill_numeric_dates(fields, all_texts, conflicts)
+    apply_party_options(fields, conflicts, party_options)
     return complete_expiry_fields(fields, conflicts), conflicts
 
 
@@ -383,8 +389,9 @@ def cloud_json_values(answer):
         position = start + consumed
     if not objects:
         raise ValueError('No JSON object')
-    merged, candidates = {}, {}
+    merged, candidates, party_options = {}, {}, {}
     for value in objects:
+        party_options = merge_party_options(party_options, value.get('party_options', {}))
         proposed = value.get('candidates')
         if isinstance(proposed, dict):
             for key, options in proposed.items():
@@ -393,12 +400,16 @@ def cloud_json_values(answer):
         for key, item in value.items():
             if key not in OCR_FIELDS or item is None or item == '':
                 continue
+            if key in {'company_name', 'address'} and isinstance(item, list):
+                candidates.setdefault(key, []).extend(item)
+                continue
             if key not in merged:
                 merged[key] = item
             elif merged[key] != item:
                 for alternative in [merged[key], item]:
                     candidates.setdefault(key, []).extend(alternative if isinstance(alternative, list) else [alternative])
     merged['candidates'] = candidates
+    merged['party_options'] = party_options
     return merged
 
 
@@ -422,6 +433,9 @@ def cloud_extract(paths, texts, api_key):
         "仅在判别日期时排除电话号码、批号数字及拍照水印；contact中的电话和batch_number中的批号仍须正常提取。"
         "净含量和单袋规格不是接收数量，不根据包装袋数量推算收货数量。严禁生成本次检验结果或判定结论。"
         "不确定或有多种可能的值不要填入正常字段，放在candidates对象中，如{\"candidates\":{\"company_name\":[\"甲公司\",\"乙公司\"]}}。"
+        "必须完整列出每张图片中所有供应商、生产商名称及其地址，不能只保留一个。"
+        "另外返回party_options对象，company_name和address分别为候选数组，每项格式为{\"value\":\"识别文字或中文译文\",\"source\":\"supplier或manufacturer或空字符串\"}。"
+        "供应商及生产商并存时两个都保留；同类有多个也全部保留。地址不含电话等其他字段，来源不明确用空字符串，不猜测。"
         "\n原始OCR仅供参考：" + json.dumps(texts, ensure_ascii=False) +
         "\n最终检查：英文品名、包装、地址须翻译成中文，不能仅照抄英文。"
         "例如 Paper bag 的包装应写纸袋；这只是翻译示例，不是本次图片事实。专名可保留原文加中文暂译。"
@@ -485,7 +499,16 @@ def cloud_extract(paths, texts, api_key):
                     except ValidationError:
                         warnings.append({'field': key, 'message': '云端候选格式不正确，请人工核对填写'})
                 if candidates.get(key):
-                    safe.pop(key, None)
+                    previous = safe.pop(key, None)
+                    if key in {'company_name', 'address'} and previous and previous not in candidates[key]:
+                        candidates[key].insert(0, previous)
+        party_options = merge_party_options(values.get('party_options', {}))
+        for key in ('company_name', 'address'):
+            if safe.get(key):
+                party_options[key].append({'value': safe[key], 'source': safe.get('address_source', '') if key == 'address' else ''})
+            for value in candidates.get(key, []):
+                party_options[key].append({'value': value, 'source': ''})
+        apply_party_options(safe, candidates, party_options)
         safe = complete_expiry_fields(safe, {warning['field']: [] for warning in warnings} | candidates)
         if warnings:
             safe['_warnings'] = warnings
