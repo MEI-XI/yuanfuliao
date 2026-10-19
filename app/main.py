@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
-from app.schemas import BatchRecordCreate, BatchVoidInput, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, ShelfLifeInput, UserChange, UserCreate, VersionInput
+from app.schemas import BatchRecordCreate, BatchRecordSelection, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, ShelfLifeInput, UserChange, UserCreate, VersionInput
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
@@ -340,7 +340,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [record_view(item) for item in saved]
 
     @app.post('/api/records/batch-void')
-    def batch_void_records(body: BatchVoidInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+    def batch_void_records(body: BatchRecordSelection, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
         versions = {entry.id: entry.version for entry in body.records}
         rows = list(session.scalars(select(Record).where(Record.id.in_(versions)).order_by(Record.id).with_for_update()))
         if len(rows) != len(versions) or any(record_expired(row) for row in rows):

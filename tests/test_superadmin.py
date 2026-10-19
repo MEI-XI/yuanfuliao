@@ -1,4 +1,70 @@
 from conftest import bootstrap
+import pytest
+
+
+@pytest.mark.parametrize('timing', ['startup', 'background'])
+def test_audit_retention_removes_only_logs_older_than_thirty_days(client, monkeypatch, timing):
+    from datetime import datetime, timedelta, timezone
+    import time
+    from fastapi.testclient import TestClient
+    from sqlalchemy import update
+    from sqlalchemy.orm import Session
+    from app.models import AuditLog
+    from app.main import create_app
+    bootstrap(client)
+    client.post('/api/ledgers', json={'name': '保留台账'})
+    logs = client.get('/api/audit-logs').json()['items']
+    expired, boundary = logs[0]['id'], logs[1]['id']
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr('app.models.utcnow', lambda: now)
+    monkeypatch.setattr('app.recycle.CLEANUP_INTERVAL_SECONDS', 0.05)
+    def age_logs():
+        with Session(client.app.state.engine) as session:
+            session.execute(update(AuditLog).where(AuditLog.id == expired).values(at=now - timedelta(days=30, microseconds=1)))
+            session.execute(update(AuditLog).where(AuditLog.id == boundary).values(at=now - timedelta(days=30)))
+            session.commit()
+    if timing == 'startup':
+        age_logs()
+    with TestClient(create_app(client.app.state.engine.url)) as other:
+        other.post('/api/login', json={'username': 'admin', 'password': 'test-password-123'})
+        if timing == 'background':
+            age_logs()
+        deadline = time.monotonic() + 3
+        while True:
+            ids = {row['id'] for row in other.get('/api/audit-logs').json()['items']}
+            if expired not in ids or time.monotonic() >= deadline:
+                break
+            time.sleep(0.025)
+        assert expired not in ids
+        assert boundary in ids
+        assert other.get('/api/ledgers').json()[0]['name'] == '保留台账'
+
+
+def test_audit_batch_delete_requires_superadmin_and_preserves_unselected_logs(client):
+    bootstrap(client)
+    client.post('/api/users', json={'username': 'reader', 'password': 'reader-password'})
+    client.post('/api/users', json={'username': 'manager', 'password': 'manager-password', 'role': 'admin'})
+    before = client.get('/api/audit-logs').json()['items']
+    ids = [row['id'] for row in before[:2]]
+    for username, password in [('reader', 'reader-password'), ('manager', 'manager-password')]:
+        client.post('/api/login', json={'username': username, 'password': password})
+        assert client.post('/api/audit-logs/batch-delete', json={'ids': ids}).status_code == 403
+    client.post('/api/login', json={'username': 'admin', 'password': 'test-password-123'})
+    for invalid in [[], [ids[0], ids[0]], [-1], list(range(1, 202))]:
+        assert client.post('/api/audit-logs/batch-delete', json={'ids': invalid}).status_code == 422
+    assert client.post('/api/audit-logs/batch-delete', json={'ids': [ids[0], 999999]}).status_code == 409
+    assert set(ids).issubset({row['id'] for row in client.get('/api/audit-logs').json()['items']})
+    response = client.post('/api/audit-logs/batch-delete', json={'ids': ids})
+    assert response.status_code == 204, response.text
+    after = client.get('/api/audit-logs').json()['items']
+    remaining = {row['id'] for row in after}
+    assert not set(ids).intersection(remaining)
+    assert {row['id'] for row in before[2:]}.issubset(remaining)
+    deletion = next(row for row in after if row['action'] == '批量删除操作日志')
+    assert deletion['details']['log_ids'] == ids
+    assert deletion['details']['count'] == 2
+    client.post('/api/logout')
+    assert client.post('/api/audit-logs/batch-delete', json={'ids': ids}).status_code == 401
 
 
 def test_audit_filters_apply_before_pagination_and_use_beijing_dates(client, monkeypatch):

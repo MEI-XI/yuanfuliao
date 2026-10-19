@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.models import History, Record, User
-from app.schemas import VersionInput
+from app.schemas import BatchRecordSelection, VersionInput
 
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,10 @@ class RecycleCleaner:
         self.thread = Thread(target=self.run, name='recycle-cleanup', daemon=True)
 
     def clean(self):
+        from app.audit import purge_expired_audit_logs
         with Session(self.engine) as session:
             purge_expired_records(session)
+            purge_expired_audit_logs(session)
             session.commit()
 
     def start(self):
@@ -76,7 +78,7 @@ class RecycleCleaner:
             try:
                 self.clean()
             except Exception:
-                logger.exception('Recycle-bin cleanup failed; retrying next cycle')
+                logger.exception('Record and audit retention cleanup failed; retrying next cycle')
 
     def stop(self):
         self.stop_event.set()
@@ -84,6 +86,40 @@ class RecycleCleaner:
 
 
 def register_recycle_routes(app, db, current_user, administrator, record_view, append_history):
+    def selected_recycled_records(body, session):
+        versions = {entry.id: entry.version for entry in body.records}
+        rows = list(session.scalars(select(Record).where(Record.id.in_(versions)).order_by(Record.id).with_for_update()))
+        if len(rows) != len(versions) or any(record_expired(row) for row in rows):
+            raise HTTPException(404, '所选记录已被删除或超过保留期限，请刷新列表后重新选择')
+        for row in rows:
+            if row.status != 'void' or row.version != versions[row.id]:
+                raise HTTPException(409, f'记录 #{row.id} 已被修改或还原，本次未处理任何记录，请刷新列表后重新选择')
+        return rows
+
+    @app.post('/api/recycle-bin/batch-restore')
+    def batch_restore_records(body: BatchRecordSelection, request: Request,
+                              user: User = Depends(administrator), session: Session = Depends(db)):
+        rows = selected_recycled_records(body, session)
+        now = models.utcnow()
+        for item in rows:
+            item.status, item.checker_id, item.checked_at, item.voided_at = 'pending', None, None, None
+            item.version += 1
+            item.updated_at = now
+            append_history(item, user, 'restored', session)
+        session.commit()
+        request.state.audit_details = {'record_ids': [row.id for row in rows]}
+        by_id = {row.id: row for row in rows}
+        return [record_view(by_id[entry.id]) for entry in body.records]
+
+    @app.post('/api/recycle-bin/batch-delete', status_code=204)
+    def batch_delete_recycled_records(body: BatchRecordSelection, request: Request,
+                                      user: User = Depends(administrator), session: Session = Depends(db)):
+        rows = selected_recycled_records(body, session)
+        ids = [row.id for row in rows]
+        delete_records(session, ids)
+        session.commit()
+        request.state.audit_details = {'record_ids': ids, 'count': len(ids)}
+
     @app.delete('/api/recycle-bin/{record_id}', status_code=204)
     def delete_recycled_record(record_id: int, request: Request, version: int = Query(..., ge=1),
                                user: User = Depends(administrator), session: Session = Depends(db)):

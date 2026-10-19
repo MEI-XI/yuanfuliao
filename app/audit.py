@@ -1,10 +1,16 @@
 """HTTP operation audit; request bodies, cookies and credential values are never read."""
 from datetime import date, datetime, time, timedelta, timezone
-from fastapi import Depends, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import Depends, HTTPException, Query, Request
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, User
+from app.schemas import AuditLogSelection
+from app import models
+
+
+def purge_expired_audit_logs(session):
+    session.execute(delete(AuditLog).where(AuditLog.at < models.utcnow() - timedelta(days=30)))
 
 
 ACTIONS = {
@@ -23,6 +29,9 @@ ACTIONS = {
     'upload_report': '上传检验报告', 'delete_report': '删除检验报告',
     'preview_export': '预览导出',
     'delete_recycled_record': '永久删除记录',
+    'batch_restore_records': '批量还原记录',
+    'batch_delete_recycled_records': '批量永久删除记录',
+    'batch_delete_audit_logs': '批量删除操作日志',
 }
 
 
@@ -46,6 +55,19 @@ def register_audit(app, engine, db, current_user):
                     status_code=response.status_code, details=details))
                 session.commit()
         return response
+
+    @app.post('/api/audit-logs/batch-delete', status_code=204)
+    def batch_delete_audit_logs(body: AuditLogSelection, request: Request,
+                                user: User = Depends(current_user), session: Session = Depends(db)):
+        if user.role != 'superadmin':
+            raise HTTPException(403, '只有超级管理员可以删除操作日志')
+        ids = list(session.scalars(select(AuditLog.id).where(AuditLog.id.in_(body.ids))
+                                  .order_by(AuditLog.id).with_for_update()))
+        if len(ids) != len(body.ids):
+            raise HTTPException(409, '所选日志已被删除，本次未删除任何日志，请刷新后重新选择')
+        session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+        session.commit()
+        request.state.audit_details = {'log_ids': body.ids, 'count': len(ids)}
 
     @app.get('/api/audit-logs')
     def audit_logs(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),

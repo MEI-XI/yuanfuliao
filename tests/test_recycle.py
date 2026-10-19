@@ -26,6 +26,33 @@ def void_record(client, record):
 
 
 @pytest.mark.parametrize('role', ['admin', 'superadmin'])
+def test_batch_restore_checks_all_versions_and_permissions_before_restoring(client, role):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    records = [void_record(client, create_record(client, ledger, fields={'material_name': name}))
+               for name in ['批量甲', '批量乙', '不选丙']]
+    body = {'records': [{'id': row['id'], 'version': row['version']} for row in records[:2]]}
+    client.post('/api/users', json={'username': 'reader', 'password': 'reader-password'})
+    client.post('/api/users', json={'username': 'manager', 'password': 'manager-password', 'role': 'admin'})
+    client.post('/api/login', json={'username': 'reader', 'password': 'reader-password'})
+    assert client.post('/api/recycle-bin/batch-restore', json=body).status_code == 403
+    username, password = ('manager', 'manager-password') if role == 'admin' else ('admin', 'test-password-123')
+    client.post('/api/login', json={'username': username, 'password': password})
+    stale = {'records': [body['records'][0], body['records'][1] | {'version': 1}]}
+    assert client.post('/api/recycle-bin/batch-restore', json=stale).status_code == 409
+    assert len(client.get('/api/recycle-bin').json()) == 3
+    response = client.post('/api/recycle-bin/batch-restore', json=body)
+    assert response.status_code == 200, response.text
+    for original, restored in zip(records, response.json()):
+        assert restored['fields'] == original['fields']
+        assert restored['status'] == 'pending'
+        assert restored['version'] == original['version'] + 1
+        assert restored['checked_at'] is None and restored['voided_at'] is None
+        assert client.get(f'/api/records/{restored["id"]}/history').json()[-1]['action'] == 'restored'
+    assert [row['id'] for row in client.get('/api/recycle-bin').json()] == [records[2]['id']]
+
+
+@pytest.mark.parametrize('role', ['admin', 'superadmin'])
 def test_permanent_delete_requires_admin_current_version_and_void_record(client, role):
     bootstrap(client)
     ledger = new_ledger(client)
@@ -46,6 +73,40 @@ def test_permanent_delete_requires_admin_current_version_and_void_record(client,
     client.post('/api/login', json={'username': 'admin', 'password': 'test-password-123'})
     audit = client.get('/api/audit-logs').json()['items']
     assert any(row['action'] == '永久删除记录' and row['details']['record_id'] == recycled['id'] for row in audit)
+
+
+@pytest.mark.parametrize('role', ['admin', 'superadmin'])
+def test_batch_delete_is_atomic_and_only_removes_selected_recycled_records(client, role):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    active = create_record(client, ledger)
+    first = create_record(client, ledger)
+    attachment = client.post(f'/api/records/{first["id"]}/reports', data={'version': first['version']},
+                             files={'file': ('report.txt', b'quality report', 'text/plain')})
+    assert attachment.status_code == 201, attachment.text
+    first = client.get(f'/api/records/{first["id"]}').json()
+    rows = [void_record(client, first), void_record(client, create_record(client, ledger)),
+            void_record(client, create_record(client, ledger))]
+    selection = [{'id': row['id'], 'version': row['version']} for row in rows[:2]]
+    client.post('/api/users', json={'username': 'reader', 'password': 'reader-password'})
+    client.post('/api/users', json={'username': 'manager', 'password': 'manager-password', 'role': 'admin'})
+    client.post('/api/login', json={'username': 'reader', 'password': 'reader-password'})
+    assert client.post('/api/recycle-bin/batch-delete', json={'records': selection}).status_code == 403
+    username, password = ('manager', 'manager-password') if role == 'admin' else ('admin', 'test-password-123')
+    client.post('/api/login', json={'username': username, 'password': password})
+    for invalid in [selection[1] | {'version': 1}, {'id': active['id'], 'version': active['version']}]:
+        assert client.post('/api/recycle-bin/batch-delete', json={'records': [selection[0], invalid]}).status_code == 409
+        assert len(client.get('/api/recycle-bin').json()) == 3
+    assert client.post('/api/recycle-bin/batch-delete', json={'records': []}).status_code == 422
+    assert client.post('/api/recycle-bin/batch-delete', json={'records': [selection[0]] * 2}).status_code == 422
+    response = client.post('/api/recycle-bin/batch-delete', json={'records': selection})
+    assert response.status_code == 204, response.text
+    for row in rows[:2]:
+        assert client.get(f'/api/records/{row["id"]}').status_code == 404
+        assert client.get(f'/api/records/{row["id"]}/history').status_code == 404
+    assert client.get(f'/api/records/{active["id"]}').status_code == 200
+    assert [row['id'] for row in client.get('/api/recycle-bin').json()] == [rows[2]['id']]
+    assert client.get(f'/api/reports/{attachment.json()["attachment"]["id"]}/preview').status_code == 404
 
 
 def test_void_records_only_appear_in_recycle_bin_with_company_filter(client):

@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
-import { api, auditPageSchema } from './api'
+import { api, auditPageSchema, json, raw } from './api'
 
 const result = ref<z.infer<typeof auditPageSchema> | null>(null)
 const busy = ref(false), error = ref('')
+const notice = ref('')
+const selectedIds = ref<number[]>([])
+const selected = computed(() => (result.value?.items || []).filter(row => selectedIds.value.includes(row.id)))
 const filters = reactive({ actor: '', action: '', target: '', from_date: '', to_date: '' })
 let appliedFilters = { ...filters }
 function search() { appliedFilters = { ...filters }; void load() }
@@ -12,12 +15,31 @@ function clearFilters() {
   Object.assign(filters, { actor: '', action: '', target: '', from_date: '', to_date: '' })
   search()
 }
-async function load(page = 1) {
-  busy.value = true; error.value = ''
+async function readPage(page: number) {
+  selectedIds.value = []
   const params = new URLSearchParams({ page: String(page), page_size: '50' })
   for (const [key, value] of Object.entries(appliedFilters)) if (value) params.set(key, value)
-  try { result.value = await api(`/audit-logs?${params}`, auditPageSchema) }
+  const response = await api(`/audit-logs?${params}`, auditPageSchema)
+  const lastPage = Math.max(1, Math.ceil(response.total / response.page_size))
+  if (page > lastPage) { await readPage(lastPage); return }
+  result.value = response
+}
+async function load(page = 1) {
+  if (busy.value) return
+  busy.value = true; error.value = ''; notice.value = ''
+  try { await readPage(page) }
   catch (e) { error.value = e instanceof Error ? e.message : '日志读取失败，请重试' }
+  finally { busy.value = false }
+}
+async function removeSelected() {
+  const ids = selected.value.map(row => row.id)
+  if (busy.value || !ids.length || !window.confirm(`确定永久删除所选 ${ids.length} 条操作日志？删除后无法恢复，不影响查验台账。`)) return
+  busy.value = true; error.value = ''; notice.value = ''
+  try {
+    await raw('/audit-logs/batch-delete', json('POST', { ids }))
+    await readPage(result.value?.page || 1)
+    notice.value = `已删除 ${ids.length} 条操作日志`
+  } catch (e) { error.value = e instanceof Error ? e.message : '日志删除失败，请刷新后重试' }
   finally { busy.value = false }
 }
 function displayTime(at: string) {
@@ -29,6 +51,7 @@ onMounted(() => load())
 <template>
   <section class="admin-card" aria-label="所有人员操作日志" :aria-busy="busy">
     <div class="module-heading"><h2>所有人员操作日志</h2><button :disabled="busy" @click="load()">刷新日志</button></div>
+    <div class="retention-notice" role="note" aria-label="操作日志保留期限"><strong>操作日志超过 30 天自动永久删除</strong><p>按操作发生时间计算。服务启动时及后台每小时自动清理，无需打开此页面。删除后无法恢复，请及时查阅所需日志。</p></div>
     <p class="muted">记录账号、公共资料与查验业务操作，按发生时间倒序显示。时间为北京时间。</p>
     <form class="filters" @submit.prevent="search">
       <label>操作人<input v-model="filters.actor" aria-label="日志操作人" list="audit-actors" placeholder="账号名称，可模糊查找" :disabled="busy"><datalist id="audit-actors"><option v-for="actor in result?.actors" :key="actor" :value="actor" /></datalist></label>
@@ -39,11 +62,18 @@ onMounted(() => load())
       <button type="submit" class="primary" :disabled="busy">筛选日志</button><button type="button" :disabled="busy" @click="clearFilters">清空筛选</button>
     </form>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
+    <p v-if="notice" role="status" class="notice">{{ notice }}</p>
     <p v-if="busy" role="status">正在读取日志…</p>
+    <div v-if="result" class="table-actions"><span>已选 {{ selected.length }} 条本页日志</span><div>
+      <button :disabled="busy || !result.items.length" @click="selectedIds = result.items.map(row => row.id)">全选本页日志</button>
+      <button :disabled="busy || !selected.length" @click="selectedIds = []">清空选择</button>
+      <button class="danger-button" :disabled="busy || !selected.length" @click="removeSelected">批量删除日志</button>
+    </div></div>
     <div v-if="result" class="table-scroll">
       <table class="ledger-table audit-table">
-        <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>操作对象</th><th>结果</th></tr></thead>
+        <thead><tr><th>选择</th><th>时间</th><th>操作人</th><th>操作</th><th>操作对象</th><th>结果</th></tr></thead>
         <tbody><tr v-for="entry in result.items" :key="entry.id">
+          <td><input v-model="selectedIds" type="checkbox" :value="entry.id" :disabled="busy" :aria-label="`选择操作日志${entry.id}`"></td>
           <td><time :datetime="entry.at">{{ displayTime(entry.at) }}</time></td>
           <td>{{ entry.actor_username }}</td><td>{{ entry.action }}</td><td>{{ entry.target }}</td>
           <td>{{ entry.status_code < 400 ? '成功' : '失败' }}<small v-if="entry.status_code >= 400">（{{ entry.status_code }}）</small></td>
@@ -61,6 +91,9 @@ onMounted(() => load())
 <style scoped>
 .module-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .module-heading h2 { margin: 0; }
+.retention-notice { border: 1px solid #e2b857; border-left: 5px solid #ba7700; background: #fff5d9; color: #704600; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; }
+.retention-notice strong { display: block; font-size: 18px; }
+.retention-notice p { margin: 8px 0 0; font-size: 14px; }
 .audit-table td { vertical-align: top; overflow-wrap: anywhere; }
 .audit-table { min-width: 720px; }
 .audit-table time { white-space: nowrap; }

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from uuid import UUID
@@ -101,7 +101,7 @@ class RecordVersion(VersionInput):
     id: int = Field(ge=1)
 
 
-class BatchVoidInput(Input):
+class BatchRecordSelection(Input):
     records: list[RecordVersion] = Field(min_length=1, max_length=200)
 
     @field_validator('records')
@@ -109,6 +109,17 @@ class BatchVoidInput(Input):
     def unique_records(cls, value):
         if len({item.id for item in value}) != len(value):
             raise ValueError('不能重复选择同一条记录')
+        return value
+
+
+class AuditLogSelection(Input):
+    ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=200)
+
+    @field_validator('ids')
+    @classmethod
+    def unique_ids(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError('不能重复选择同一条操作日志')
         return value
 
 
