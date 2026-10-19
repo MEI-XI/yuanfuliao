@@ -109,3 +109,7 @@ export function today() {
   const part = (name: string) => parts.find(p => p.type === name)?.value || ''
   return `${part('year')}-${part('month')}-${part('day')}`
 }
+
+export function entryDate(value: string) {
+  return new Date(value).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+}

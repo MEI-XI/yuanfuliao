@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
-import { api, json, raw, recordSchema, type CheckRecord, type Ledger } from './api'
+import { api, json, raw, entryDate, recordSchema, type CheckRecord, type Ledger } from './api'
 
 const props = defineProps<{ administrator: boolean; ledgers: Ledger[]; ledgerId: number | null }>()
 const emit = defineEmits<{ close: []; open: [record: CheckRecord] }>()
@@ -95,8 +95,8 @@ onMounted(() => action(load))
         <button :disabled="busy || !selected.length" @click="batchAction('restore')">批量还原</button>
         <button class="danger-button" :disabled="busy || !selected.length" @click="batchAction('delete')">批量永久删除</button>
       </div></div>
-      <div class="table-scroll"><table class="ledger-table"><thead><tr><th v-if="administrator">选择</th><th>公司台账</th><th>物料名称、型号</th><th>供应商或生产商</th><th>作废时间</th><th>自动删除时间</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="record in visible" :key="record.id"><td v-if="administrator"><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="busy" :aria-label="`选择回收记录${record.id}`"></td><td>{{ ledgers.find(ledger => ledger.id === record.ledger_id)?.name }}</td><td>{{ record.fields.material_name || '未填写物料' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ formatTime(record.voided_at) }}</td><td>{{ formatTime(record.voided_at, 30) }} 后</td><td><button class="text-button" :disabled="busy" @click="emit('open', record)">查看</button><button v-if="administrator" :disabled="busy" @click="restore(record)">还原</button><button v-if="administrator" class="danger-button" :disabled="busy" @click="remove(record)">永久删除</button></td></tr>
+      <div class="table-scroll"><table class="ledger-table"><thead><tr><th v-if="administrator">选择</th><th>公司台账</th><th>录入日期</th><th>物料名称、型号</th><th>供应商或生产商</th><th>作废时间</th><th>自动删除时间</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="record in visible" :key="record.id"><td v-if="administrator"><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="busy" :aria-label="`选择回收记录${record.id}`"></td><td>{{ ledgers.find(ledger => ledger.id === record.ledger_id)?.name }}</td><td class="dates-cell">{{ entryDate(record.created_at) }}</td><td>{{ record.fields.material_name || '未填写物料' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ formatTime(record.voided_at) }}</td><td>{{ formatTime(record.voided_at, 30) }} 后</td><td><button class="text-button" :disabled="busy" @click="emit('open', record)">查看</button><button v-if="administrator" :disabled="busy" @click="restore(record)">还原</button><button v-if="administrator" class="danger-button" :disabled="busy" @click="remove(record)">永久删除</button></td></tr>
       </tbody></table></div>
       <p v-if="!visible.length" class="empty">{{ busy ? '正在读取回收站…' : '回收站中没有符合条件的记录' }}</p>
     </section>
