@@ -91,9 +91,6 @@ onMounted(() => load())
 <style scoped>
 .module-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .module-heading h2 { margin: 0; }
-.retention-notice { border: 1px solid #e2b857; border-left: 5px solid #ba7700; background: #fff5d9; color: #704600; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; }
-.retention-notice strong { display: block; font-size: 18px; }
-.retention-notice p { margin: 8px 0 0; font-size: 14px; }
 .audit-table td { vertical-align: top; overflow-wrap: anywhere; }
 .audit-table { min-width: 720px; }
 .audit-table time { white-space: nowrap; }

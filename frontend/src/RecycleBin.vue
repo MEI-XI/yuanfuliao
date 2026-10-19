@@ -74,7 +74,8 @@ onMounted(() => action(load))
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>回收站</h1><p class="muted">作废记录超过 30 天自动永久删除；管理员可在删除前还原，还原后需重新核对。</p></div><button :disabled="busy" @click="emit('close')">返回台账</button></div>
+    <div class="page-heading"><div><h1>回收站</h1></div><button :disabled="busy" @click="emit('close')">返回台账</button></div>
+    <div class="retention-notice" role="note" aria-label="回收站保留期限"><strong>作废记录超过 30 天自动永久删除</strong><p>按作废时间计算，删除后无法还原，相关报告附件也会删除。管理员可在删除前还原记录，还原后需重新核对。</p></div>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <p v-if="notice" role="status" class="notice">{{ notice }}</p>
     <section class="table-panel recycle-panel">
