@@ -60,9 +60,9 @@ def test_audit_batch_delete_requires_superadmin_and_preserves_unselected_logs(cl
     remaining = {row['id'] for row in after}
     assert not set(ids).intersection(remaining)
     assert {row['id'] for row in before[2:]}.issubset(remaining)
-    deletion = next(row for row in after if row['action'] == '批量删除操作日志')
-    assert deletion['details']['log_ids'] == ids
-    assert deletion['details']['count'] == 2
+    assert not any(row['action'] == '批量删除操作日志' for row in after)
+    assert client.post('/api/audit-logs/batch-delete', json={'ids': list(remaining)}).status_code == 204
+    assert client.get('/api/audit-logs').json()['total'] == 0
     client.post('/api/logout')
     assert client.post('/api/audit-logs/batch-delete', json={'ids': ids}).status_code == 401
 

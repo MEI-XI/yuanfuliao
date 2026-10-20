@@ -1,6 +1,6 @@
 """HTTP operation audit; request bodies, cookies and credential values are never read."""
 from datetime import date, datetime, time, timedelta, timezone
-from fastapi import Depends, HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -42,7 +42,7 @@ def register_audit(app, engine, db, current_user):
         actor = getattr(request.state, 'audit_actor', None)
         route = request.scope.get('route')
         name = getattr(route, 'name', '')
-        if name in {'derive_expiry', 'preview_unsaved_report'}:
+        if name in {'derive_expiry', 'preview_unsaved_report', 'batch_delete_audit_logs'}:
             return response
         if actor and 200 <= response.status_code < 300 and (
             request.method in ('POST', 'PUT', 'PATCH', 'DELETE') or name == 'reveal_password'
@@ -57,7 +57,7 @@ def register_audit(app, engine, db, current_user):
         return response
 
     @app.post('/api/audit-logs/batch-delete', status_code=204)
-    def batch_delete_audit_logs(body: AuditLogSelection, request: Request,
+    def batch_delete_audit_logs(body: AuditLogSelection,
                                 user: User = Depends(current_user), session: Session = Depends(db)):
         if user.role != 'superadmin':
             raise HTTPException(403, '只有超级管理员可以删除操作日志')
@@ -67,7 +67,6 @@ def register_audit(app, engine, db, current_user):
             raise HTTPException(409, '所选日志已被删除，本次未删除任何日志，请刷新后重新选择')
         session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
         session.commit()
-        request.state.audit_details = {'log_ids': body.ids, 'count': len(ids)}
 
     @app.get('/api/audit-logs')
     def audit_logs(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),
