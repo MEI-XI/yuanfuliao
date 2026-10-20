@@ -4,6 +4,12 @@ import { z } from 'zod'
 import { api, auditPageSchema, json, raw } from './api'
 
 const result = ref<z.infer<typeof auditPageSchema> | null>(null)
+const detailEntry = ref<z.infer<typeof auditPageSchema>['items'][number] | null>(null)
+const detailOpen = ref(false)
+function showDetails(entry: z.infer<typeof auditPageSchema>['items'][number]) {
+  detailEntry.value = entry
+  detailOpen.value = true
+}
 const busy = ref(false), error = ref('')
 const notice = ref('')
 const selectedIds = ref<number[]>([])
@@ -71,12 +77,14 @@ onMounted(() => load())
     </div></div>
     <div v-if="result" class="table-scroll">
       <table class="ledger-table audit-table">
-        <thead><tr><th>选择</th><th>时间</th><th>操作人</th><th>操作</th><th>操作内容</th><th>结果</th></tr></thead>
+        <colgroup><col style="width: 60px"><col style="width: 190px"><col style="width: 130px"><col style="width: 140px"><col><col style="width: 80px"><col style="width: 100px"></colgroup>
+        <thead><tr><th>选择</th><th>时间</th><th>操作人</th><th>操作</th><th>操作内容</th><th>结果</th><th>详情</th></tr></thead>
         <tbody><tr v-for="entry in result.items" :key="entry.id">
           <td><input v-model="selectedIds" type="checkbox" :value="entry.id" :disabled="busy" :aria-label="`选择操作日志${entry.id}`"></td>
           <td><time :datetime="entry.at">{{ displayTime(entry.at) }}</time></td>
-          <td>{{ entry.actor_username }}</td><td>{{ entry.action }}</td><td>{{ entry.description || entry.action }}</td>
+          <td :title="entry.actor_username">{{ entry.actor_username }}</td><td :title="entry.action">{{ entry.action }}</td><td><button class="audit-content" :title="entry.description || entry.action" aria-label="展开完整操作内容" @click="showDetails(entry)">{{ entry.description || entry.action }}</button></td>
           <td>{{ entry.status_code < 400 ? '成功' : '失败' }}<small v-if="entry.status_code >= 400">（{{ entry.status_code }}）</small></td>
+          <td><button class="text-button audit-detail-button" @click="showDetails(entry)">查看详情</button></td>
         </tr></tbody>
       </table>
       <p v-if="!result.items.length" class="module-empty">暂无操作日志。</p>
@@ -85,14 +93,31 @@ onMounted(() => load())
       <span>共 {{ result.total }} 条 · 第 {{ result.page }} 页</span>
       <div class="button-row"><button :disabled="busy || result.page <= 1" @click="load(result.page - 1)">上一页</button><button :disabled="busy || result.page * result.page_size >= result.total" @click="load(result.page + 1)">下一页</button></div>
     </nav>
+    <el-dialog v-model="detailOpen" title="操作日志详情" width="min(780px, 94vw)" append-to-body>
+      <dl v-if="detailEntry" class="audit-detail">
+        <dt>日志编号</dt><dd>{{ detailEntry.id }}</dd>
+        <dt>时间</dt><dd>{{ displayTime(detailEntry.at) }}</dd>
+        <dt>操作人</dt><dd>{{ detailEntry.actor_username }}</dd>
+        <dt>操作</dt><dd>{{ detailEntry.action }}</dd>
+        <dt>结果</dt><dd>{{ detailEntry.status_code < 400 ? '成功' : '失败' }}</dd>
+        <dt>操作内容</dt><dd>{{ detailEntry.description || detailEntry.action }}</dd>
+      </dl>
+      <template #footer><button @click="detailOpen = false">关闭详情</button></template>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
 .module-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .module-heading h2 { margin: 0; }
-.audit-table td { vertical-align: top; overflow-wrap: anywhere; }
-.audit-table { min-width: 720px; }
+.audit-table th, .audit-table td { vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 12px; }
+.audit-table { min-width: 1040px; width: 100%; table-layout: fixed; }
+.audit-content { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; font: inherit; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.audit-content:hover { color: var(--teal); text-decoration: underline; }
+.audit-detail-button { min-height: 32px; padding: 4px 0; white-space: nowrap; }
+.audit-detail { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 14px 16px; max-height: 65vh; overflow: auto; margin: 0; }
+.audit-detail dt { color: #64748b; }
+.audit-detail dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .audit-table time { white-space: nowrap; }
 .audit-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 18px; flex-wrap: wrap; }
 .audit-pagination .button-row { margin: 0; }
