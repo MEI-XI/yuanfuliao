@@ -181,12 +181,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": item.id, "username": item.username} for item in session.scalars(select(User).order_by(User.id))]
 
     @app.post("/api/users", status_code=201)
-    def add_user(body: UserCreate, user: User = Depends(administrator), session: Session = Depends(db)):
+    def add_user(body: UserCreate, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
         if body.role == "superadmin" or (user.role != "superadmin" and body.role != "user"):
             raise HTTPException(403, "只有超级管理员可以设置管理员权限，不能新增超级管理员")
         item = User(username=body.username, password_hash=passwords.hash(body.password), password_encrypted=encrypt_password(body.password), role=body.role)
         session.add(item)
         session.commit()
+        request.state.audit_details = {'subject_path': f'/api/users/{item.id}'}
         return user_view(item)
 
     @app.patch("/api/users/{user_id}")
@@ -233,10 +234,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": row.id, "name": row.name} for row in session.scalars(select(Ledger).order_by(Ledger.id))]
 
     @app.post("/api/ledgers", status_code=201)
-    def add_ledger(body: LedgerInput, user: User = Depends(administrator), session: Session = Depends(db)):
+    def add_ledger(body: LedgerInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
         item = Ledger(name=body.name, name_key=body.name.casefold())
         session.add(item)
         session.commit()
+        request.state.audit_details = {'subject_path': f'/api/ledgers/{item.id}'}
         return {"id": item.id, "name": item.name}
 
     @app.patch("/api/ledgers/{ledger_id}")
@@ -316,13 +318,14 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return item
 
     @app.post("/api/ledgers/{ledger_id}/records", status_code=201)
-    def add_record(ledger_id: int, body: RecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+    def add_record(ledger_id: int, body: RecordCreate, request: Request, user: User = Depends(current_user), session: Session = Depends(db)):
         item = create_record(ledger_id, body, user, session)
         session.commit()
+        request.state.audit_details = {'subject_path': f'/api/records/{item.id}'}
         return record_view(item)
 
     @app.post('/api/ledgers/{ledger_id}/records/batch', status_code=201)
-    def add_batch(ledger_id: int, body: BatchRecordCreate, user: User = Depends(current_user), session: Session = Depends(db)):
+    def add_batch(ledger_id: int, body: BatchRecordCreate, request: Request, user: User = Depends(current_user), session: Session = Depends(db)):
         request_id = str(body.request_id)
         payload_hash = hashlib.sha256(json.dumps(body.model_dump(mode='json', exclude_unset=True), sort_keys=True).encode()).hexdigest()
         session.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'record-batch:' + request_id})
@@ -333,6 +336,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
             saved = [session.get(Record, record_id) for record_id in receipt.record_ids]
             if any(item is None or record_expired(item) for item in saved):
                 raise HTTPException(409, '本批次已保存，部分记录已清理，请返回台账查看')
+            request.state.audit_details = {'record_ids': [item.id for item in saved]}
             return [record_view(item) for item in saved]
         saved = [create_record(ledger_id, draft, user, session) for draft in body.records]
         if body.mark_checked:
@@ -344,6 +348,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.add(BatchSubmission(id=request_id, owner_id=user.id, ledger_id=ledger_id,
                                     payload_hash=payload_hash, record_ids=[item.id for item in saved]))
         session.commit()
+        request.state.audit_details = {'record_ids': [item.id for item in saved]}
         return [record_view(item) for item in saved]
 
     @app.post('/api/records/batch-void')
@@ -487,11 +492,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
             raise HTTPException(409, '存在重名项目，请修改名称后再保存')
 
     @app.post("/api/materials", status_code=201)
-    def add_material(body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
+    def add_material(body: MaterialInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
         unique_catalog_name(session, Material, body.name)
         material = Material(**body.model_dump())
         session.add(material)
         session.commit()
+        request.state.audit_details = {'subject_path': f'/api/materials/{material.id}'}
         return {"id": material.id, **body.model_dump()}
 
     @app.put("/api/materials/{material_id}")
@@ -525,8 +531,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return {"id": item.id, **body.model_dump()}
 
     @app.post("/api/schemes", status_code=201)
-    def add_scheme(body: SchemeInput, user: User = Depends(administrator), session: Session = Depends(db)):
-        return save_scheme(body, session)
+    def add_scheme(body: SchemeInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+        result = save_scheme(body, session)
+        request.state.audit_details = {'subject_path': f'/api/schemes/{result["id"]}'}
+        return result
 
     @app.put("/api/schemes/{scheme_id}")
     def edit_scheme(scheme_id: int, body: SchemeInput, user: User = Depends(administrator), session: Session = Depends(db)):
@@ -549,8 +557,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return {"id": item.id, **body.model_dump()}
 
     @app.post("/api/partners", status_code=201)
-    def add_partner(body: PartnerInput, user: User = Depends(administrator), session: Session = Depends(db)):
-        return save_partner(body, session)
+    def add_partner(body: PartnerInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+        result = save_partner(body, session)
+        request.state.audit_details = {'subject_path': f'/api/partners/{result["id"]}'}
+        return result
 
     @app.put("/api/partners/{partner_id}")
     def edit_partner(partner_id: int, body: PartnerInput, user: User = Depends(administrator), session: Session = Depends(db)):

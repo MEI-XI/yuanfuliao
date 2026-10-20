@@ -1,12 +1,13 @@
 """HTTP operation audit; request bodies, cookies and credential values are never read."""
 from datetime import date, datetime, time, timedelta, timezone
 from fastapi import Depends, HTTPException, Query
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, User
 from app.schemas import AuditLogSelection
 from app import models
+from app.audit_descriptions import describe_operation, describe_subject, historical_description
 
 
 def purge_expired_audit_logs(session):
@@ -38,6 +39,10 @@ ACTIONS = {
 def register_audit(app, engine, db, current_user):
     @app.middleware('http')
     async def audit_operation(request, call_next):
+        previous_subject = ''
+        if request.method == 'DELETE':
+            with Session(engine) as session:
+                previous_subject = describe_subject(session, request.url.path, {})
         response = await call_next(request)
         actor = getattr(request.state, 'audit_actor', None)
         route = request.scope.get('route')
@@ -50,8 +55,11 @@ def register_audit(app, engine, db, current_user):
             details = {'method': request.method, 'route': getattr(route, 'path', '')}
             details.update(getattr(request.state, 'audit_details', {}))
             with Session(engine) as session:
+                action = ACTIONS.get(name, '执行操作')
+                subject = previous_subject or describe_subject(session, request.url.path, details)
+                details['description'] = describe_operation(action, subject)
                 session.add(AuditLog(actor_id=actor[0], actor_username=actor[1],
-                    action=ACTIONS.get(name, '执行操作'), target=request.url.path,
+                    action=action, target=request.url.path,
                     status_code=response.status_code, details=details))
                 session.commit()
         return response
@@ -83,15 +91,17 @@ def register_audit(app, engine, db, current_user):
         if action:
             filters.append(AuditLog.action == action)
         if target.strip():
-            filters.append(AuditLog.target.contains(target.strip(), autoescape=True))
+            filters.append(or_(AuditLog.target.contains(target.strip(), autoescape=True),
+                               AuditLog.details['description'].as_string().contains(target.strip(), autoescape=True)))
         local_timezone = timezone(timedelta(hours=8))
         if from_date:
             filters.append(AuditLog.at >= datetime.combine(from_date, time.min, local_timezone))
         if to_date:
             filters.append(AuditLog.at <= datetime.combine(to_date, time.max, local_timezone))
         rows = session.scalars(select(AuditLog).where(*filters).order_by(AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size))
-        return {'items': [{key: getattr(row, key) for key in (
-            'id', 'actor_id', 'actor_username', 'at', 'action', 'target', 'status_code', 'details')}
+        return {'items': [{**{key: getattr(row, key) for key in (
+            'id', 'actor_id', 'actor_username', 'at', 'action', 'target', 'status_code', 'details')},
+            'description': row.details.get('description') or historical_description(session, row)}
             for row in rows], 'total': session.scalar(select(func.count()).select_from(AuditLog).where(*filters)),
             'actions': list(session.scalars(select(AuditLog.action).distinct().order_by(AuditLog.action))),
             'actors': list(session.scalars(select(AuditLog.actor_username).distinct().order_by(AuditLog.actor_username))),

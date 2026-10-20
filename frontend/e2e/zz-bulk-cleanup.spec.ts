@@ -58,6 +58,7 @@ test('日志上方提示30天清理，批量删除只删除勾选日志且筛选
   await page.getByLabel('日志操作对象').fill(`/api/ledgers/${ledger.id}/records`)
   await page.getByRole('button', { name: '筛选日志', exact: true }).click()
   await expect(page.locator('tbody tr')).toHaveCount(3)
+  await expect(page.locator('tbody tr').first()).toContainText(`创建记录：${ledger.name}台账`)
   await page.getByRole('button', { name: '全选本页日志', exact: true }).click()
   await page.getByRole('button', { name: '筛选日志', exact: true }).click()
   await expect(page.getByRole('button', { name: '批量删除日志', exact: true })).toBeDisabled()

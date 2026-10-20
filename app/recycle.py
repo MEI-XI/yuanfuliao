@@ -116,9 +116,11 @@ def register_recycle_routes(app, db, current_user, administrator, record_view, a
                                       user: User = Depends(administrator), session: Session = Depends(db)):
         rows = selected_recycled_records(body, session)
         ids = [row.id for row in rows]
+        from app.audit_descriptions import record_subject
+        subjects = [record_subject(session, row.id) for row in rows]
         delete_records(session, ids)
         session.commit()
-        request.state.audit_details = {'record_ids': ids, 'count': len(ids)}
+        request.state.audit_details = {'record_ids': ids, 'count': len(ids), 'subjects': subjects}
 
     @app.delete('/api/recycle-bin/{record_id}', status_code=204)
     def delete_recycled_record(record_id: int, request: Request, version: int = Query(..., ge=1),

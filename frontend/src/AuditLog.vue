@@ -56,7 +56,7 @@ onMounted(() => load())
     <form class="filters" @submit.prevent="search">
       <label>操作人<input v-model="filters.actor" aria-label="日志操作人" list="audit-actors" placeholder="账号名称，可模糊查找" :disabled="busy"><datalist id="audit-actors"><option v-for="actor in result?.actors" :key="actor" :value="actor" /></datalist></label>
       <label>操作类型<select v-model="filters.action" aria-label="日志操作类型" :disabled="busy"><option value="">全部操作</option><option v-for="action in result?.actions" :key="action" :value="action">{{ action }}</option></select></label>
-      <label>操作对象<input v-model="filters.target" aria-label="日志操作对象" placeholder="路径或记录编号" :disabled="busy"></label>
+      <label>操作内容<input v-model="filters.target" aria-label="日志操作对象" placeholder="物料、方案、公司名称或记录编号" :disabled="busy"></label>
       <label>开始日期<input v-model="filters.from_date" type="date" aria-label="日志开始日期" :disabled="busy"></label>
       <label>结束日期<input v-model="filters.to_date" type="date" aria-label="日志结束日期" :disabled="busy"></label>
       <button type="submit" class="primary" :disabled="busy">筛选日志</button><button type="button" :disabled="busy" @click="clearFilters">清空筛选</button>
@@ -71,11 +71,11 @@ onMounted(() => load())
     </div></div>
     <div v-if="result" class="table-scroll">
       <table class="ledger-table audit-table">
-        <thead><tr><th>选择</th><th>时间</th><th>操作人</th><th>操作</th><th>操作对象</th><th>结果</th></tr></thead>
+        <thead><tr><th>选择</th><th>时间</th><th>操作人</th><th>操作</th><th>操作内容</th><th>结果</th></tr></thead>
         <tbody><tr v-for="entry in result.items" :key="entry.id">
           <td><input v-model="selectedIds" type="checkbox" :value="entry.id" :disabled="busy" :aria-label="`选择操作日志${entry.id}`"></td>
           <td><time :datetime="entry.at">{{ displayTime(entry.at) }}</time></td>
-          <td>{{ entry.actor_username }}</td><td>{{ entry.action }}</td><td>{{ entry.target }}</td>
+          <td>{{ entry.actor_username }}</td><td>{{ entry.action }}</td><td>{{ entry.description || entry.action }}</td>
           <td>{{ entry.status_code < 400 ? '成功' : '失败' }}<small v-if="entry.status_code >= 400">（{{ entry.status_code }}）</small></td>
         </tr></tbody>
       </table>

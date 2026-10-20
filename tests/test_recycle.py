@@ -157,7 +157,7 @@ def test_restoration_requires_admin_and_current_version_and_preserves_content(cl
     for key in ('fields', 'items', 'report', 'inspection_enabled', 'creator_id', 'created_at', 'image_ids', 'recognition_job_id'):
         assert restored[key] == original[key]
     assert client.get('/api/recycle-bin').json() == []
-    assert client.get('/api/records').json() == [restored]
+    assert client.get('/api/records').json() == [restored | {'report_count': 0}]
     history = client.get(path + '/history').json()
     assert [row['action'] for row in history] == ['created', 'checked', 'voided', 'restored']
     assert history[-1]['actor_id'] == admin['id']
