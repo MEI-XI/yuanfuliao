@@ -45,6 +45,27 @@ def upload(client, record, data=PDF, filename='供应商报告.pdf', version=Non
                        files={'file': (filename, data, 'application/octet-stream')})
 
 
+def test_ledger_report_counts_follow_upload_and_delete(client):
+    record = create_record(client)
+    other = client.post(f'/api/ledgers/{record["ledger_id"]}/records', json={}).json()
+
+    def counts():
+        for url in ['/api/records', f'/api/ledgers/{record["ledger_id"]}/records']:
+            rows = {row['id']: row['report_count'] for row in client.get(url).json()}
+            assert rows[other['id']] == 0
+            assert rows[record['id']] == expected
+
+    expected = 0
+    counts()
+    first = upload(client, record).json()
+    second = upload(client, record, version=first['record_version']).json()
+    expected = 2
+    counts()
+    assert client.delete(f'/api/reports/{second["attachment"]["id"]}?version={second["record_version"]}').status_code == 200
+    expected = 1
+    counts()
+
+
 def test_upload_report_preserves_record_fields_and_resets_checked_state(client):
     record = create_record(client)
     checked = client.post(f'/api/records/{record["id"]}/check', json={'version': record['version']}).json()

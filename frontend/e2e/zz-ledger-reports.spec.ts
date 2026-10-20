@@ -18,6 +18,9 @@ test('点击检验状态可查看报告，未检验或无附件时提醒', async
   }
   await page.reload()
   await page.getByRole('button', { name: `进入${company}` }).click()
+  await expect(page.getByRole('row').filter({ hasText: '有报告物料' })).toContainText('1份报告')
+  await expect(page.getByRole('row').filter({ hasText: '无报告物料' })).toContainText('未上传报告')
+  await expect(page.getByRole('row').filter({ hasText: '未检验物料' })).toContainText('未上传报告')
   for (const [name, status, message] of [['未检验物料', '未检验', '该记录为未检验，无法查看检验报告'], ['无报告物料', '检验', '该记录尚未上传检验报告附件']] as const) {
     const dialog = page.waitForEvent('dialog').then(async alert => {
       const text = alert.message()

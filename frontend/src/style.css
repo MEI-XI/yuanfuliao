@@ -41,3 +41,6 @@
 
 .ledger-page .export-hint { margin: 16px 24px 0; }
 @media (max-width: 600px) { .ledger-page .export-hint { margin: 14px 14px 0; } }
+
+.report-count { margin-left: 8px; color: var(--teal); font-size: 13px; white-space: nowrap; }
+.report-count.missing { color: #9a6100; }

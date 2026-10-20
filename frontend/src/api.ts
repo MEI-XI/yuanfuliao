@@ -20,6 +20,7 @@ export const reportSchema = z.object({ packaging: z.string().default(''), batch_
 export const recordSchema = z.object({
   id: z.number(), ledger_id: z.number(), creator_id: z.number(), version: z.number(),
   inspection_enabled: z.boolean().default(true),
+  report_count: z.number().int().nonnegative().default(0),
   voided_at: z.string().nullable().default(null),
   status: z.enum(['pending', 'checked', 'void']), fields: fieldsSchema, items: z.array(itemSchema), report: reportSchema,
   image_ids: z.array(z.number()), material_id: z.number().nullable(), scheme_name: z.string(),

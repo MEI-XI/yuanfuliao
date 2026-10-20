@@ -47,6 +47,13 @@ def record_view(item):
     return result
 
 
+def record_list_view(session, query):
+    from app.report_attachments import ReportAttachment
+    counts = select(ReportAttachment.record_id, func.count().label('total')).group_by(ReportAttachment.record_id).subquery()
+    rows = session.execute(query.add_columns(func.coalesce(counts.c.total, 0)).outerjoin(counts, Record.id == counts.c.record_id))
+    return [record_view(item) | {'report_count': count} for item, count in rows]
+
+
 def create_app(database_url: str | None = None) -> FastAPI:
     load_dotenv()
     engine = create_engine(database_url or os.environ["DATABASE_URL"], pool_pre_ping=True)
@@ -366,11 +373,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/api/records")
     def all_records(user: User = Depends(current_user), session: Session = Depends(db)):
-        return [record_view(item) for item in session.scalars(select(Record).where(Record.status != 'void').order_by(Record.id.desc()))]
+        return record_list_view(session, select(Record).where(Record.status != 'void').order_by(Record.id.desc()))
 
     @app.get("/api/ledgers/{ledger_id}/records")
     def records(ledger_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
-        return [record_view(row) for row in session.scalars(select(Record).where(Record.ledger_id == ledger_id, Record.status != 'void').order_by(Record.id.desc()))]
+        return record_list_view(session, select(Record).where(Record.ledger_id == ledger_id, Record.status != 'void').order_by(Record.id.desc()))
 
     @app.patch("/api/records/{record_id}")
     def edit_record(record_id: int, body: RecordChange, user: User = Depends(current_user), session: Session = Depends(db)):
