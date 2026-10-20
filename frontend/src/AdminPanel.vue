@@ -87,7 +87,10 @@ async function action(work: () => Promise<unknown>, success = '已保存') {
   try { await work(); await refresh(); notice.value = success } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' } finally { busy.value = false }
 }
 async function deleteEntry(resource: 'materials' | 'schemes' | 'partners' | 'users' | 'ledgers', id: number, name: string, reset: () => void) {
-  if (!window.confirm(`确定删除「${name}」吗？删除后不可恢复，已有查验记录会保留。`)) return
+  const message = resource === 'ledgers'
+    ? `确定删除公司台账「${name}」吗？仅可删除空台账；存在查验记录（含回收站记录）、照片或识别任务时将禁止删除。空台账删除后不可恢复。`
+    : `确定删除「${name}」吗？删除后不可恢复，已有查验记录会保留。`
+  if (!window.confirm(message)) return
   await action(async () => { await raw(`/${resource}/${id}`, { method: 'DELETE' }); reset() }, '已删除')
 }
 function deleteMaterial(entry: z.infer<typeof materialSchema>) {
