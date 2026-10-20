@@ -14,7 +14,7 @@ const metadataSchema = z.object({
 })
 type Attachment = z.infer<typeof attachmentSchema>
 type RecordMetadata = z.infer<typeof metadataSchema>
-const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata]; filesChanged: [files: File[]] }>()
+const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata]; filesChanged: [files: File[]]; loaded: [count: number] }>()
 const attachments = ref<Attachment[]>([])
 const loading = ref(false)
 const busy = ref(false)
@@ -41,7 +41,7 @@ watch(() => props.recordId, async recordId => {
   loading.value = true
   try {
     const loaded = await api(`/records/${recordId}/reports`, z.array(attachmentSchema))
-    if (props.recordId === recordId) attachments.value = loaded
+    if (props.recordId === recordId) { attachments.value = loaded; emit('loaded', loaded.length) }
   } catch (cause) {
     if (props.recordId === recordId) error.value = cause instanceof Error ? cause.message : '无法读取报告附件'
   } finally {
