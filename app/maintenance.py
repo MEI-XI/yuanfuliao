@@ -58,11 +58,24 @@ def register_maintenance_routes(app, db, administrator):
         session.delete(item)
         session.commit()
 
+    def ledger_deletion_reason(session, ledger_id):
+        for model, label in ((Record, '查验记录'), (Photo, '照片'), (RecognitionJob, '识别任务')):
+            if session.scalar(select(model.id).where(model.ledger_id == ledger_id).limit(1)) is not None:
+                return f'该台账已有{label}，不能删除；仅可删除空台账'
+        return ''
+
+    @app.get('/api/ledgers/{ledger_id}/deletion-check')
+    def check_ledger_deletion(ledger_id: int, user: User = Depends(administrator), session: Session = Depends(db)):
+        if session.get(Ledger, ledger_id) is None:
+            raise HTTPException(404, '台账不存在')
+        reason = ledger_deletion_reason(session, ledger_id)
+        return {'allowed': not reason, 'reason': reason}
+
     @app.delete('/api/ledgers/{ledger_id}', status_code=204)
     def delete_ledger(ledger_id: int, user: User = Depends(administrator), session: Session = Depends(db)):
         item = entry(session, Ledger, ledger_id, '台账')
-        for model, label in ((Record, '查验记录'), (Photo, '照片'), (RecognitionJob, '识别任务')):
-            if session.scalar(select(model.id).where(model.ledger_id == ledger_id).limit(1)) is not None:
-                raise HTTPException(409, f'该台账已有{label}，不能删除；仅可删除空台账')
+        reason = ledger_deletion_reason(session, ledger_id)
+        if reason:
+            raise HTTPException(409, reason)
         session.delete(item)
         session.commit()
