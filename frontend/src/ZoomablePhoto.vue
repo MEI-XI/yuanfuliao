@@ -83,7 +83,7 @@ function end(event: PointerEvent) { pointers.delete(event.pointerId) }
       <img :src="src" alt="包装图片放大预览" draggable="false" :style="{ ...imageSize, transform: `translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${scale})` }">
     </div>
     <div class="zoom-tools"><span>{{ Math.round(scale * 100) }}%</span><button type="button" @click="reset">恢复原始比例</button></div>
-    <div class="zoom-tools"><button type="button" class="rotate-button" aria-label="向左旋转" title="向左旋转90°" @click="rotate(-90)"><span aria-hidden="true">↶</span></button><button type="button" class="rotate-button" aria-label="向右旋转" title="向右旋转90°" @click="rotate(90)"><span aria-hidden="true">↷</span></button></div>
+    <div class="zoom-tools"><button type="button" class="rotate-button" aria-label="向左旋转" title="向左旋转90°" @click="rotate(-90)"><span aria-hidden="true">⟲</span></button><button type="button" class="rotate-button" aria-label="向右旋转" title="向右旋转90°" @click="rotate(90)"><span aria-hidden="true">⟳</span></button></div>
     <p class="zoom-help">滚轮或双指缩放，放大后拖动查看</p>
   </div>
 </template>
