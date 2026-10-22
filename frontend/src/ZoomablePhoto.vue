@@ -1,10 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 
 defineProps<{ src: string }>()
 const viewport = ref<HTMLElement | null>(null)
 const scale = ref(1), offsetX = ref(0), offsetY = ref(0)
 const flippedX = ref(false), flippedY = ref(false)
+const rotation = ref(0)
+const viewportSize = ref({ width: 0, height: 0 })
+const imageSize = computed(() => rotation.value % 180 !== 0
+  ? { width: `${viewportSize.value.height}px`, height: `${viewportSize.value.width}px` }
+  : { width: '100%', height: '100%' })
+let resizeObserver: ResizeObserver | undefined
+onMounted(() => {
+  resizeObserver = new ResizeObserver(entries => {
+    const box = entries[0]?.contentRect
+    if (box) { viewportSize.value = { width: box.width, height: box.height }; clampPosition() }
+  })
+  if (viewport.value) resizeObserver.observe(viewport.value)
+})
+onBeforeUnmount(() => resizeObserver?.disconnect())
+function rotate(degrees: number) {
+  rotation.value = (rotation.value + degrees + 360) % 360
+  offsetX.value = 0; offsetY.value = 0
+}
 type Point = { x: number; y: number }
 const pointers = new Map<number, Point>()
 
@@ -63,9 +81,10 @@ function end(event: PointerEvent) { pointers.delete(event.pointerId) }
     <div ref="viewport" role="region" aria-label="原图缩放区域" class="zoom-viewport" :class="{ zoomed: scale > 1 }"
       @wheel.prevent="wheel" @pointerdown.prevent="down" @pointermove.prevent="move"
       @pointerup="end" @pointercancel="end" @lostpointercapture="end">
-      <img :src="src" alt="包装图片放大预览" draggable="false" :style="{ transform: `translate(${offsetX}px, ${offsetY}px) scale(${scale * (flippedX ? -1 : 1)}, ${scale * (flippedY ? -1 : 1)})` }">
+      <img :src="src" alt="包装图片放大预览" draggable="false" :style="{ ...imageSize, transform: `translate(${offsetX}px, ${offsetY}px) rotate(${rotation}deg) scale(${scale * (flippedX ? -1 : 1)}, ${scale * (flippedY ? -1 : 1)})` }">
     </div>
     <div class="zoom-tools"><span>{{ Math.round(scale * 100) }}%</span><button type="button" @click="reset">恢复原始比例</button></div>
+    <div class="zoom-tools"><button type="button" @click="rotate(-90)">向左旋转</button><button type="button" @click="rotate(90)">向右旋转</button></div>
     <div class="zoom-tools"><button type="button" :aria-pressed="flippedX" @click="flippedX = !flippedX">左右翻转</button><button type="button" :aria-pressed="flippedY" @click="flippedY = !flippedY">上下翻转</button></div>
     <p class="zoom-help">滚轮或双指缩放，放大后拖动查看</p>
   </div>
@@ -73,8 +92,8 @@ function end(event: PointerEvent) { pointers.delete(event.pointerId) }
 
 <style scoped>
 .zoom-photo { min-width: 0; }
-.zoom-viewport { height: 55vh; height: 55dvh; overflow: hidden; position: relative; background: #eef3f5; touch-action: none; user-select: none; border-radius: 6px; }
-.zoom-viewport img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; transform-origin: center; }
+.zoom-viewport { display: flex; align-items: center; justify-content: center; height: 55vh; height: 55dvh; overflow: hidden; position: relative; background: #eef3f5; touch-action: none; user-select: none; border-radius: 6px; }
+.zoom-viewport img { display: block; flex-shrink: 0; max-width: none; object-fit: contain; pointer-events: none; transform-origin: center; }
 .zoom-viewport.zoomed { cursor: grab; }
 .zoom-viewport.zoomed:active { cursor: grabbing; }
 .zoom-tools { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; font-variant-numeric: tabular-nums; }
