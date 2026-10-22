@@ -44,3 +44,9 @@
 
 .report-count { margin-left: 8px; color: var(--teal); font-size: 13px; white-space: nowrap; }
 .report-count.missing { color: #9a6100; }
+
+.large-photo-carousel { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 12px; }
+.large-photo-carousel .large-photo { min-width: 0; max-height: 62vh; }
+.photo-nav { width: 44px; height: 52px; padding: 0; font-size: 34px; color: var(--teal); }
+.photo-position { text-align: center; margin: 14px 0 0; color: #64748b; font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) { .large-photo-carousel { gap: 4px; } }
