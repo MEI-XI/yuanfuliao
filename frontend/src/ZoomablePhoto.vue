@@ -4,6 +4,7 @@ import { ref } from 'vue'
 defineProps<{ src: string }>()
 const viewport = ref<HTMLElement | null>(null)
 const scale = ref(1), offsetX = ref(0), offsetY = ref(0)
+const flippedX = ref(false), flippedY = ref(false)
 type Point = { x: number; y: number }
 const pointers = new Map<number, Point>()
 
@@ -62,9 +63,10 @@ function end(event: PointerEvent) { pointers.delete(event.pointerId) }
     <div ref="viewport" role="region" aria-label="原图缩放区域" class="zoom-viewport" :class="{ zoomed: scale > 1 }"
       @wheel.prevent="wheel" @pointerdown.prevent="down" @pointermove.prevent="move"
       @pointerup="end" @pointercancel="end" @lostpointercapture="end">
-      <img :src="src" alt="包装图片放大预览" draggable="false" :style="{ transform: `translate(${offsetX}px, ${offsetY}px) scale(${scale})` }">
+      <img :src="src" alt="包装图片放大预览" draggable="false" :style="{ transform: `translate(${offsetX}px, ${offsetY}px) scale(${scale * (flippedX ? -1 : 1)}, ${scale * (flippedY ? -1 : 1)})` }">
     </div>
     <div class="zoom-tools"><span>{{ Math.round(scale * 100) }}%</span><button type="button" @click="reset">恢复原始比例</button></div>
+    <div class="zoom-tools"><button type="button" :aria-pressed="flippedX" @click="flippedX = !flippedX">左右翻转</button><button type="button" :aria-pressed="flippedY" @click="flippedY = !flippedY">上下翻转</button></div>
     <p class="zoom-help">滚轮或双指缩放，放大后拖动查看</p>
   </div>
 </template>
@@ -77,5 +79,6 @@ function end(event: PointerEvent) { pointers.delete(event.pointerId) }
 .zoom-viewport.zoomed:active { cursor: grabbing; }
 .zoom-tools { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; font-variant-numeric: tabular-nums; }
 .zoom-tools button { padding: 5px 10px; min-height: 32px; font-size: 13px; }
+.zoom-tools button[aria-pressed="true"] { color: var(--teal); border-color: var(--teal); background: #e8f7f6; }
 .zoom-help { margin: 8px 0 0; text-align: center; color: #64748b; font-size: 12px; }
 </style>
