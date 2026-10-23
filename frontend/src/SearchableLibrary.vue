@@ -1,32 +1,32 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-const props = defineProps<{ label: string; placeholder: string; emptyLabel: string; value: string | number; options: { value: string | number; label: string; search?: string }[] }>()
-const emit = defineEmits<{ change: [event: Event]; 'update:value': [value: string] }>()
+import { ElSelect, ElOption } from 'element-plus'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/option/style/css'
+const props = defineProps<{ label: string; placeholder: string; emptyLabel: string; value: string | number; disabled?: boolean; options: { value: string | number; label: string; search?: string }[] }>()
+const emit = defineEmits<{ change: [value: string]; 'update:value': [value: string] }>()
 const query = ref('')
 const matches = computed(() => {
   const words = query.value.normalize('NFKC').trim().toLocaleLowerCase().split(/\s+/)
   return props.options.filter(option => words.every(word => `${option.label} ${option.search || ''}`.normalize('NFKC').toLocaleLowerCase().includes(word)))
 })
-const selectedOutside = computed(() => props.options.find(option => String(option.value) === String(props.value) && !matches.value.includes(option)))
-function choose(event: Event) {
-  if (!(event.target instanceof HTMLSelectElement)) return
-  emit('update:value', event.target.value)
-  emit('change', event)
-}
+function choose(value: string) { emit('update:value', value); emit('change', value) }
 </script>
 
 <template>
-  <div class="searchable-library">
-    <label class="library-search">搜索{{ label }}<input v-model="query" type="search" :placeholder="placeholder" @input.stop @change.stop></label>
-    <label>{{ label }}<select :value="value" :aria-label="label" @change="choose">
-      <option value="">{{ emptyLabel }}</option>
-      <option v-if="selectedOutside" :value="selectedOutside.value" hidden>{{ selectedOutside.label }}</option>
-      <option v-for="option in matches" :key="option.value" :value="option.value">{{ option.label }}</option>
-    </select></label>
-    <small v-if="!matches.length" role="status">没有匹配结果，请修改搜索词。</small>
+  <div class="searchable-library" @input.stop @change.stop>
+    <span class="library-label">{{ label }}</span>
+    <ElSelect :model-value="String(value)" :aria-label="label" :disabled="disabled" filterable
+      :placeholder="placeholder" :filter-method="(value: string) => query = value"
+      no-match-text="没有匹配结果，请修改搜索词。" @change="choose" @visible-change="(open: boolean) => { if (!open) query = '' }">
+      <ElOption v-if="!query.trim()" value="" :label="emptyLabel" />
+      <ElOption v-for="option in matches" :key="option.value" :value="String(option.value)" :label="option.label" />
+      <template #empty><span class="library-empty">没有匹配结果，请修改搜索词。</span></template>
+    </ElSelect>
   </div>
 </template>
 
 <style scoped>
-.searchable-library{display:grid;gap:10px;min-width:0;width:100%}.library-search{font-size:13px;color:#647b86}.searchable-library select{min-width:0;max-width:100%;text-overflow:ellipsis}.searchable-library small{color:#647b86;font-size:12px}
+.searchable-library{display:grid;gap:8px;min-width:0;width:100%;--el-color-primary:var(--teal)}.library-label{font-size:14px;color:#405767}.library-empty{display:block;padding:12px;color:#647b86;font-size:13px}
+.searchable-library :deep(.el-select__wrapper){min-height:42px;padding:9px 11px;border-radius:5px;font-size:14px}.searchable-library :deep(.el-select__input){min-height:0;height:24px;padding:0;border:0;background:transparent;box-shadow:none;outline:none}.searchable-library :deep(.el-select){width:100%;min-width:0}
 </style>
