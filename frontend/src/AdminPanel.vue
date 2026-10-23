@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
 import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
@@ -13,6 +13,9 @@ const error = ref(''), notice = ref(''), busy = ref(false)
 const users = ref<User[]>([]), ledgers = ref<Ledger[]>([])
 const materials = ref<z.infer<typeof materialSchema>[]>([]), schemes = ref<z.infer<typeof schemeSchema>[]>([]), partners = ref<z.infer<typeof partnerSchema>[]>([])
 const materialSearch = ref(''), schemeSearch = ref(''), schemeBinding = ref('')
+const selectedMaterials = ref<number[]>([]), selectedSchemes = ref<number[]>([])
+watch(materialSearch, () => { selectedMaterials.value = [] })
+watch([schemeSearch, schemeBinding], () => { selectedSchemes.value = [] })
 function matchesSearch(query: string, values: string[]) {
   const text = values.join(' ').normalize('NFKC').toLocaleLowerCase()
   return query.trim().normalize('NFKC').toLocaleLowerCase().split(/\s+/).every(word => text.includes(word))
@@ -105,6 +108,8 @@ function closeEditor() {
 async function refresh() {
   const result = await Promise.all([api('/materials', z.array(materialSchema)), api('/schemes', z.array(schemeSchema)), api('/partners', z.array(partnerSchema)), api('/users', z.array(userSchema)), api('/ledgers', z.array(ledgerSchema)), api('/settings/cloud', z.object({ configured: z.boolean() }))])
   ;[materials.value, schemes.value, partners.value, users.value, ledgers.value] = result
+  selectedMaterials.value = selectedMaterials.value.filter(id => materials.value.some(entry => entry.id === id))
+  selectedSchemes.value = selectedSchemes.value.filter(id => schemes.value.some(entry => entry.id === id))
   cloudConfigured.value = result[5].configured
 }
 async function action(work: () => Promise<unknown>, success = '已保存') {
@@ -126,6 +131,31 @@ function deleteScheme(entry: z.infer<typeof schemeSchema>) {
   return deleteEntry('schemes', entry.id, entry.name, () => {
     if (scheme.id === entry.id) Object.assign(scheme, { id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
   })
+}
+async function deleteSelectedCatalog(resource: 'materials' | 'schemes') {
+  if (busy.value) return
+  const selection = resource === 'materials' ? selectedMaterials : selectedSchemes
+  const entries = (resource === 'materials' ? materials.value : schemes.value).filter(entry => selection.value.includes(entry.id))
+  if (!entries.length) return
+  const label = resource === 'materials' ? '物料' : '检验标准方案'
+  if (!window.confirm(`确定删除所选的 ${entries.length} 条${label}吗？删除后不可恢复，已有查验记录内容会保留。${resource === 'materials' ? '绑定这些物料的方案将改为通用方案。' : ''}`)) return
+  busy.value = true; error.value = ''; notice.value = ''; returnPosition = null
+  let deleted = 0
+  const failures: string[] = []
+  try {
+    for (const entry of entries) {
+      try {
+        await raw(`/${resource}/${entry.id}`, { method: 'DELETE' })
+        selection.value = selection.value.filter(id => id !== entry.id)
+        if (resource === 'materials') materials.value = materials.value.filter(item => item.id !== entry.id)
+        else schemes.value = schemes.value.filter(item => item.id !== entry.id)
+        deleted++
+      } catch (problem) { failures.push(`${entry.name}：${problem instanceof Error ? problem.message : '删除失败'}`) }
+    }
+    notice.value = `已删除 ${deleted} 条${label}`
+    await refresh()
+  } catch (problem) { failures.push(`刷新列表失败：${problem instanceof Error ? problem.message : '请刷新页面'}`) }
+  finally { error.value = failures.join('；'); busy.value = false }
 }
 function deletePartner(entry: z.infer<typeof partnerSchema>) {
   return deleteEntry('partners', entry.id, entry.name, () => {
@@ -232,12 +262,14 @@ async function testCloud() {
     <section v-else-if="tab === 'materials'" class="admin-card">
       <div class="module-heading"><h2>共享物料</h2><button class="primary" :disabled="busy" @click="openMaterial()">新增物料</button></div>
       <div class="catalog-filters"><label>查找物料<input v-model="materialSearch" type="search" placeholder="名称、型号、别名、规格、供应商或包装"></label><button @click="materialSearch = ''">清空筛选</button><span class="muted" role="status">显示 {{ filteredMaterials.length }} / {{ materials.length }} 条</span></div>
-      <div class="maintenance-list"><div v-for="entry in filteredMaterials" :key="entry.id" :data-catalog-row="`material-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openMaterial(entry)"><span>{{ entry.name }} {{ entry.model }}<span class="row-details">{{ [entry.specification, entry.company_name, entry.packaging].filter(Boolean).join(' · ') }}</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteMaterial(entry)">删除</button></div><p v-if="!filteredMaterials.length" class="module-empty">{{ materials.length ? '没有匹配的物料，请调整或清空筛选。' : '暂无共享物料，点击“新增物料”建立资料。' }}</p></div>
+      <div class="button-row catalog-selection"><button :disabled="busy || !filteredMaterials.length" @click="selectedMaterials = filteredMaterials.map(entry => entry.id)">全选筛选结果</button><button :disabled="busy || !selectedMaterials.length" @click="selectedMaterials = []">取消全选</button><span>已选 {{ selectedMaterials.length }} 条</span><button class="maintenance-delete" :disabled="busy || !selectedMaterials.length" @click="deleteSelectedCatalog('materials')">批量删除</button></div>
+      <div class="maintenance-list"><div v-for="entry in filteredMaterials" :key="entry.id" :data-catalog-row="`material-${entry.id}`" class="maintenance-row"><input v-model="selectedMaterials" :value="entry.id" type="checkbox" :disabled="busy" :aria-label="`选择${entry.name}`"><button class="maintenance-edit" :disabled="busy" @click="openMaterial(entry)"><span>{{ entry.name }} {{ entry.model }}<span class="row-details">{{ [entry.specification, entry.company_name, entry.packaging].filter(Boolean).join(' · ') }}</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteMaterial(entry)">删除</button></div><p v-if="!filteredMaterials.length" class="module-empty">{{ materials.length ? '没有匹配的物料，请调整或清空筛选。' : '暂无共享物料，点击“新增物料”建立资料。' }}</p></div>
     </section>
     <section v-else-if="tab === 'schemes'" class="admin-card">
       <div class="module-heading"><h2>检验标准方案</h2><button class="primary" :disabled="busy" @click="openScheme()">新增检验方案</button></div>
       <div class="catalog-filters"><label>查找检验方案<input v-model="schemeSearch" type="search" placeholder="方案名称、关联物料、检验项目或标准规定"></label><label>方案类型<select v-model="schemeBinding" aria-label="方案类型"><option value="">全部</option><option value="general">通用方案</option><option value="bound">已绑定物料</option></select></label><button @click="schemeSearch = ''; schemeBinding = ''">清空筛选</button><span class="muted" role="status">显示 {{ filteredSchemes.length }} / {{ schemes.length }} 条</span></div>
-      <div class="maintenance-list"><div v-for="entry in filteredSchemes" :key="entry.id" :data-catalog-row="`scheme-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openScheme(entry)"><span>{{ entry.name }}<span class="row-details">{{ materials.find(m => m.id === entry.material_id)?.name || '通用方案' }} · {{ entry.items.length }} 个检验项目</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteScheme(entry)">删除</button></div><p v-if="!filteredSchemes.length" class="module-empty">{{ schemes.length ? '没有匹配的方案，请调整或清空筛选。' : '暂无检验方案，点击“新增检验方案”维护项目与标准。' }}</p></div>
+      <div class="button-row catalog-selection"><button :disabled="busy || !filteredSchemes.length" @click="selectedSchemes = filteredSchemes.map(entry => entry.id)">全选筛选结果</button><button :disabled="busy || !selectedSchemes.length" @click="selectedSchemes = []">取消全选</button><span>已选 {{ selectedSchemes.length }} 条</span><button class="maintenance-delete" :disabled="busy || !selectedSchemes.length" @click="deleteSelectedCatalog('schemes')">批量删除</button></div>
+      <div class="maintenance-list"><div v-for="entry in filteredSchemes" :key="entry.id" :data-catalog-row="`scheme-${entry.id}`" class="maintenance-row"><input v-model="selectedSchemes" :value="entry.id" type="checkbox" :disabled="busy" :aria-label="`选择${entry.name}`"><button class="maintenance-edit" :disabled="busy" @click="openScheme(entry)"><span>{{ entry.name }}<span class="row-details">{{ materials.find(m => m.id === entry.material_id)?.name || '通用方案' }} · {{ entry.items.length }} 个检验项目</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteScheme(entry)">删除</button></div><p v-if="!filteredSchemes.length" class="module-empty">{{ schemes.length ? '没有匹配的方案，请调整或清空筛选。' : '暂无检验方案，点击“新增检验方案”维护项目与标准。' }}</p></div>
     </section>
     <section v-else-if="tab === 'partners'" class="admin-card"><div class="module-heading"><h2>供应商与生产商资料</h2><button class="primary" :disabled="busy" @click="openPartner()">新增单位</button></div><div class="maintenance-list"><div v-for="entry in partners" :key="entry.id" :data-catalog-row="`partner-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openPartner(entry)"><span>{{ entry.name }}<span class="row-details">{{ entry.kind === 'supplier' ? '供应商' : '生产商' }}<template v-if="entry.address"> · {{ entry.address }}</template></span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deletePartner(entry)">删除</button></div><p v-if="!partners.length" class="module-empty">暂无单位资料，点击“新增单位”建立供应商或生产商资料。</p></div></section>
     <section v-else-if="tab === 'users'" class="admin-card"><div class="module-heading"><h2>人员列表</h2><button class="primary" :disabled="busy" @click="openAccount()">新增账号</button></div><div class="maintenance-list"><div v-for="entry in users" :key="entry.id" :data-catalog-row="`account-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy || (!superadmin && entry.role === 'superadmin')" @click="openAccount(entry)"><span>{{ entry.username }}<span class="row-details">{{ roleNames[entry.role] }} · {{ entry.active ? '启用' : '停用' }}</span></span><small>修改</small></button><button v-if="entry.role !== 'superadmin'" class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></div></div></section>
@@ -253,6 +285,7 @@ async function testCloud() {
 .maintenance-edit span{overflow-wrap:anywhere}
 .maintenance-edit small{flex-shrink:0;color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:6px 12px}
 .maintenance-delete{color:#a83232;flex-shrink:0}
+.catalog-selection{align-items:center}.maintenance-row > input[type="checkbox"]{width:18px;height:18px;flex-shrink:0;margin:0 8px}
 .catalog-filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin:22px 0}.catalog-filters label:first-child{flex:1;min-width:240px}.catalog-filters label{margin:0}.catalog-filters .muted{align-self:center;font-size:13px}
 .credential-view{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.credential-view label{max-width:440px;margin-bottom:12px}
 .standard-edit-row{grid-template-columns:1fr 1.5fr auto}
