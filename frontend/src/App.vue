@@ -409,7 +409,7 @@ const textFields: { key: keyof Pick<Fields, 'material_name' | 'specification' | 
   { key: 'contact', label: '联系方式' }, { key: 'shelf_life', label: '保质期' }, { key: 'received_quantity', label: '接收数量' },
 ]
 const filteredRecords = computed(() => records.value.filter(r =>
-  (!filter.text.trim() || [r.fields.material_name, r.fields.company_name, r.fields.specification, r.fields.notes, String(r.id)].some(v => v.toLowerCase().includes(filter.text.trim().toLowerCase()))) &&
+  (!filter.text.trim() || (filter.text.trim() === '未填写物料' && !r.fields.material_name.trim()) || [r.fields.material_name, r.fields.company_name, r.fields.specification, r.fields.notes, String(r.id)].some(v => v.toLowerCase().includes(filter.text.trim().toLowerCase()))) &&
   (!allCompanies.value || !filter.ledger || r.ledger_id === filter.ledger) &&
   (!filter.inspection || r.inspection_enabled === (filter.inspection === 'inspected')) &&
   (!filter.reports || (r.report_count > 0) === (filter.reports === 'uploaded')) &&
