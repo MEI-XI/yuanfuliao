@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.expiry import normalize_shelf_life
+from app.catalog_names import normalize_scheme_name
 
 
 class Input(BaseModel):
@@ -169,6 +170,11 @@ class SchemeInput(Input):
     material_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
     items: list[StandardItem] = Field(default_factory=list)
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def clean_scheme_name(cls, value):
+        return normalize_scheme_name(value) if isinstance(value, str) else value
 
 
 class ExportInput(Input):
