@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
 import PaginationBar from './PaginationBar.vue'
+import SearchableLibrary from './SearchableLibrary.vue'
 import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
 const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
 const props = defineProps<{ currentUser: User }>()
@@ -283,7 +284,7 @@ async function testCloud() {
         <p v-if="shelfLifeDayNotice(material.shelf_life)" class="notice" role="status">{{ shelfLifeDayNotice(material.shelf_life) }}</p><div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '创建物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'scheme'" @submit.prevent="saveScheme"><fieldset :disabled="busy">
-        <div class="field-grid"><label>方案所属物料<select v-model="scheme.material_id"><option :value="null">不绑定物料（通用方案）</option><option v-for="entry in materials" :key="entry.id" :value="entry.id">{{ [entry.name, entry.model].filter(Boolean).join(' ') }}</option></select></label><label>方案名称<input v-model="scheme.name" required></label></div>
+        <div class="field-grid"><SearchableLibrary label="方案所属物料" placeholder="输入物料名称、型号或别名" empty-label="不绑定物料（通用方案）" :disabled="busy" :value="scheme.material_id || ''" :options="materials.map(entry => ({ value: entry.id, label: [entry.name, entry.model].filter(Boolean).join(' '), search: entry.aliases }))" @update:value="scheme.material_id = Number($event) || null" /><label>方案名称<input v-model="scheme.name" required></label></div>
         <p class="muted">所属物料可不选；所有方案都能用于不同物料，关联仅作提示。</p>
         <div v-for="(item, index) in scheme.items" :key="index" class="standard-edit-row"><label>项目名称<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><button type="button" @click="scheme.items.splice(index, 1)">移除</button></div>
         <button type="button" @click="scheme.items.push({ name: '', standard: '', unit: '' })">增加项目</button>
