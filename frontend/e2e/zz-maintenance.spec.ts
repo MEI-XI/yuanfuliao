@@ -39,6 +39,7 @@ test('管理员取消或确认删除公共资料，重新新增表单为空并�
   await expect(page.getByLabel('物料名称', { exact: true })).toHaveValue('')
   await page.getByRole('button', { name: '取消返回', exact: true }).click()
   await page.getByRole('button', { name: '检验标准方案', exact: true }).click()
+  await page.getByLabel('查找检验方案', { exact: true }).fill(scheme.name)
   const schemeRow = page.locator('.maintenance-row').filter({ hasText: scheme.name })
   await schemeRow.getByRole('button', { name: /修改/ }).click()
   await page.getByRole('button', { name: '保存修改', exact: true }).click()

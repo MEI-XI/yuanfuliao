@@ -62,6 +62,16 @@ test('各小模块从自己的列表进入新增和修改页面，返回后丢�
     await create.getByRole('button', { name: `创建${entry.noun}`, exact: true }).click()
     await expect(create).not.toBeVisible()
     const row = page.locator('.maintenance-row').filter({ hasText: entry.name })
+    const searchLabels: Record<string, string> = { partners: '查找单位', users: '查找账号', ledgers: '查找台账' }
+    const searchLabel = searchLabels[entry.resource]
+    if (searchLabel) {
+      await page.getByLabel(searchLabel, { exact: true }).fill(entry.name)
+      await expect(page.locator('tbody .maintenance-row')).toHaveCount(1)
+      await page.getByLabel(searchLabel, { exact: true }).fill('没有此条记录的搜索文字')
+      await expect(page.locator('tbody .maintenance-row')).toHaveCount(0)
+      await page.getByRole('button', { name: '清空筛选', exact: true }).click()
+      if (entry.resource === 'partners') await page.screenshot({ path: '../tmp/admin-unified-partners.png', fullPage: true })
+    }
     await row.getByRole('button', { name: /修改/ }).click()
     const edit = page.getByRole('region', { name: `修改${entry.noun}：${entry.name}`, exact: true })
     await expect(edit.getByLabel(entry.label, { exact: true })).toHaveValue(entry.name)
