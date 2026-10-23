@@ -92,6 +92,8 @@ class BatchSubmission(Base):
 
 class Material(Base):
     __tablename__ = "materials"
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow, onupdate=utcnow)
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     model: Mapped[str] = mapped_column(String(200), default="")
@@ -108,6 +110,8 @@ class Material(Base):
 
 class Scheme(Base):
     __tablename__ = "schemes"
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow, onupdate=utcnow)
     id: Mapped[int] = mapped_column(primary_key=True)
     material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(120))

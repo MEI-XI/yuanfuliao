@@ -478,7 +478,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def materials(user: User = Depends(current_user), session: Session = Depends(db)):
         from app.expiry import normalize_shelf_life
         return [{"id": m.id, **{field: getattr(m, field) for field in MaterialInput.model_fields},
-                 'shelf_life': normalize_shelf_life(m.shelf_life)}
+                 'shelf_life': normalize_shelf_life(m.shelf_life), 'created_at': m.created_at, 'updated_at': m.updated_at}
                 for m in session.scalars(select(Material).order_by(Material.id))]
 
     def unique_catalog_name(session, model, name, entry_id=None):
@@ -498,7 +498,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         session.add(material)
         session.commit()
         request.state.audit_details = {'subject_path': f'/api/materials/{material.id}'}
-        return {"id": material.id, **body.model_dump()}
+        return {"id": material.id, **body.model_dump(), "created_at": material.created_at, "updated_at": material.updated_at}
 
     @app.put("/api/materials/{material_id}")
     def edit_material(material_id: int, body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
@@ -508,15 +508,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
         unique_catalog_name(session, Material, body.name, material_id)
         for key, value in body.model_dump().items():
             setattr(material, key, value)
+        material.updated_at = utcnow()
         session.commit()
-        return {"id": material.id, **body.model_dump()}
+        return {"id": material.id, **body.model_dump(), "created_at": material.created_at, "updated_at": material.updated_at}
 
     @app.get("/api/schemes")
     def schemes(material_id: int | None = None, user: User = Depends(current_user), session: Session = Depends(db)):
         query = select(Scheme).order_by(Scheme.id)
         if material_id:
             query = query.where(Scheme.material_id == material_id)
-        return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items} for s in session.scalars(query)]
+        return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items, "created_at": s.created_at, "updated_at": s.updated_at} for s in session.scalars(query)]
 
     def save_scheme(body, session, scheme_id=None):
         unique_catalog_name(session, Scheme, body.name, scheme_id)
@@ -526,9 +527,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if not item:
             raise HTTPException(404, "方案不存在")
         item.material_id, item.name, item.items = body.material_id, body.name, [i.model_dump() for i in body.items]
+        item.updated_at = utcnow()
+        if not scheme_id:
+            item.created_at = item.updated_at
         session.add(item)
         session.commit()
-        return {"id": item.id, **body.model_dump()}
+        return {"id": item.id, **body.model_dump(), "created_at": item.created_at, "updated_at": item.updated_at}
 
     @app.post("/api/schemes", status_code=201)
     def add_scheme(body: SchemeInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
