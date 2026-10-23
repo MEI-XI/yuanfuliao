@@ -8,10 +8,21 @@ const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
 const roleNames = { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }
 const tab = ref('materials')
-const tabs = computed(() => [{ key: 'materials', name: '物料与检验标准' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }, ...(superadmin.value ? [{ key: 'audit', name: '操作日志' }] : [])])
+const tabs = computed(() => [{ key: 'materials', name: '物料维护' }, { key: 'schemes', name: '检验标准方案' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }, ...(superadmin.value ? [{ key: 'audit', name: '操作日志' }] : [])])
 const error = ref(''), notice = ref(''), busy = ref(false)
 const users = ref<User[]>([]), ledgers = ref<Ledger[]>([])
 const materials = ref<z.infer<typeof materialSchema>[]>([]), schemes = ref<z.infer<typeof schemeSchema>[]>([]), partners = ref<z.infer<typeof partnerSchema>[]>([])
+const materialSearch = ref(''), schemeSearch = ref(''), schemeBinding = ref('')
+function matchesSearch(query: string, values: string[]) {
+  const text = values.join(' ').normalize('NFKC').toLocaleLowerCase()
+  return query.trim().normalize('NFKC').toLocaleLowerCase().split(/\s+/).every(word => text.includes(word))
+}
+const filteredMaterials = computed(() => materials.value.filter(entry => matchesSearch(materialSearch.value, [entry.name, entry.model, entry.aliases, entry.specification, entry.company_name, entry.packaging])))
+const filteredSchemes = computed(() => schemes.value.filter(entry => {
+  const linked = materials.value.find(m => m.id === entry.material_id)
+  return (!schemeBinding.value || (schemeBinding.value === 'general' ? entry.material_id === null : entry.material_id !== null)) &&
+    matchesSearch(schemeSearch.value, [entry.name, linked?.name || '', linked?.model || '', ...entry.items.flatMap(item => [item.name, item.standard])])
+}))
 const material = reactive({ id: 0, name: '', model: '', aliases: '', ...materialDetailsSchema.parse({}) })
 const scheme = reactive<{ id: number; material_id: number | null; name: string; items: { name: string; standard: string; unit: string }[] }>({ id: 0, material_id: null, name: '', items: [{ name: '', standard: '', unit: '' }] })
 const partner = reactive<{ id: number; name: string; kind: 'supplier' | 'manufacturer'; address: string; contact: string }>({ id: 0, name: '', kind: 'supplier', address: '', contact: '' })
@@ -24,7 +35,20 @@ type EditorKind = 'material' | 'scheme' | 'partner' | 'account' | 'company'
 const editorNames = { material: '物料', scheme: '检验方案', partner: '单位', account: '账号', company: '台账' }
 const editor = ref<{ kind: EditorKind | 'cloud'; title: string } | null>(null)
 const formHeading = ref<HTMLElement | null>(null)
+let returnPosition: { tab: string; kind: EditorKind; id: number; scrollY: number } | null = null
+async function restoreListPosition() {
+  await nextTick()
+  if (editor.value || !returnPosition || tab.value !== returnPosition.tab) return
+  const row = document.querySelector<HTMLElement>(`[data-catalog-row="${returnPosition.kind}-${returnPosition.id}"]`)
+  window.scrollTo({ top: returnPosition.scrollY, behavior: 'instant' })
+  if (row) {
+    row.querySelector<HTMLButtonElement>('.maintenance-edit')?.focus({ preventScroll: true })
+    const box = row.getBoundingClientRect()
+    if (box.top < 80 || box.bottom > window.innerHeight) row.scrollIntoView({ block: 'center', behavior: 'instant' })
+  }
+}
 async function showEditor(kind: EditorKind, originalName?: string) {
+  returnPosition = originalName === undefined ? null : { tab: tab.value, kind, id: { material, scheme, partner, account, company }[kind].id, scrollY: window.scrollY }
   editor.value = { kind, title: originalName === undefined ? `新增${editorNames[kind]}` : `修改${editorNames[kind]}：${originalName}` }
   error.value = ''; notice.value = ''
   await nextTick(); formHeading.value?.focus(); formHeading.value?.scrollIntoView({ block: 'start' })
@@ -76,6 +100,7 @@ function closeEditor() {
   Object.assign(company, { id: 0, name: '' })
   cloudKey.value = ''
   error.value = ''
+  void restoreListPosition()
 }
 async function refresh() {
   const result = await Promise.all([api('/materials', z.array(materialSchema)), api('/schemes', z.array(schemeSchema)), api('/partners', z.array(partnerSchema)), api('/users', z.array(userSchema)), api('/ledgers', z.array(ledgerSchema)), api('/settings/cloud', z.object({ configured: z.boolean() }))])
@@ -84,7 +109,7 @@ async function refresh() {
 }
 async function action(work: () => Promise<unknown>, success = '已保存') {
   error.value = ''; notice.value = ''; busy.value = true
-  try { await work(); await refresh(); notice.value = success } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' } finally { busy.value = false }
+  try { await work(); await refresh(); notice.value = success; await restoreListPosition() } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' } finally { busy.value = false }
 }
 async function deleteEntry(resource: 'materials' | 'schemes' | 'partners' | 'users', id: number, name: string, reset: () => void) {
   const message = `确定删除「${name}」吗？删除后不可恢复，已有查验记录会保留。`
@@ -204,14 +229,20 @@ async function testCloud() {
         <div class="button-row"><button class="primary" :disabled="!cloudKey">{{ cloudConfigured ? '保存更新' : '保存配置' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
     </section>
-    <div v-else-if="tab === 'materials'" class="admin-columns">
-      <section class="admin-card"><div class="module-heading"><h2>共享物料</h2><button class="primary" :disabled="busy" @click="openMaterial()">新增物料</button></div><div class="maintenance-list"><div v-for="entry in materials" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openMaterial(entry)"><span>{{ entry.name }} {{ entry.model }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteMaterial(entry)">删除</button></div><p v-if="!materials.length" class="module-empty">暂无共享物料，点击“新增物料”建立资料。</p></div></section>
-      <section class="admin-card"><div class="module-heading"><h2>检验标准方案</h2><button class="primary" :disabled="busy" @click="openScheme()">新增检验方案</button></div><div class="maintenance-list"><div v-for="entry in schemes" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openScheme(entry)"><span>{{ materials.find(m => m.id === entry.material_id)?.name || '通用' }} / {{ entry.name }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteScheme(entry)">删除</button></div><p v-if="!schemes.length" class="module-empty">暂无检验方案，点击“新增检验方案”维护项目与标准。</p></div></section>
-    </div>
-    <section v-else-if="tab === 'partners'" class="admin-card"><div class="module-heading"><h2>供应商与生产商资料</h2><button class="primary" :disabled="busy" @click="openPartner()">新增单位</button></div><div class="maintenance-list"><div v-for="entry in partners" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openPartner(entry)"><span>{{ entry.name }}<span class="row-details">{{ entry.kind === 'supplier' ? '供应商' : '生产商' }}<template v-if="entry.address"> · {{ entry.address }}</template></span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deletePartner(entry)">删除</button></div><p v-if="!partners.length" class="module-empty">暂无单位资料，点击“新增单位”建立供应商或生产商资料。</p></div></section>
-    <section v-else-if="tab === 'users'" class="admin-card"><div class="module-heading"><h2>人员列表</h2><button class="primary" :disabled="busy" @click="openAccount()">新增账号</button></div><div class="maintenance-list"><div v-for="entry in users" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy || (!superadmin && entry.role === 'superadmin')" @click="openAccount(entry)"><span>{{ entry.username }}<span class="row-details">{{ roleNames[entry.role] }} · {{ entry.active ? '启用' : '停用' }}</span></span><small>修改</small></button><button v-if="entry.role !== 'superadmin'" class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></div></div></section>
+    <section v-else-if="tab === 'materials'" class="admin-card">
+      <div class="module-heading"><h2>共享物料</h2><button class="primary" :disabled="busy" @click="openMaterial()">新增物料</button></div>
+      <div class="catalog-filters"><label>查找物料<input v-model="materialSearch" type="search" placeholder="名称、型号、别名、规格、供应商或包装"></label><button @click="materialSearch = ''">清空筛选</button><span class="muted" role="status">显示 {{ filteredMaterials.length }} / {{ materials.length }} 条</span></div>
+      <div class="maintenance-list"><div v-for="entry in filteredMaterials" :key="entry.id" :data-catalog-row="`material-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openMaterial(entry)"><span>{{ entry.name }} {{ entry.model }}<span class="row-details">{{ [entry.specification, entry.company_name, entry.packaging].filter(Boolean).join(' · ') }}</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteMaterial(entry)">删除</button></div><p v-if="!filteredMaterials.length" class="module-empty">{{ materials.length ? '没有匹配的物料，请调整或清空筛选。' : '暂无共享物料，点击“新增物料”建立资料。' }}</p></div>
+    </section>
+    <section v-else-if="tab === 'schemes'" class="admin-card">
+      <div class="module-heading"><h2>检验标准方案</h2><button class="primary" :disabled="busy" @click="openScheme()">新增检验方案</button></div>
+      <div class="catalog-filters"><label>查找检验方案<input v-model="schemeSearch" type="search" placeholder="方案名称、关联物料、检验项目或标准规定"></label><label>方案类型<select v-model="schemeBinding" aria-label="方案类型"><option value="">全部</option><option value="general">通用方案</option><option value="bound">已绑定物料</option></select></label><button @click="schemeSearch = ''; schemeBinding = ''">清空筛选</button><span class="muted" role="status">显示 {{ filteredSchemes.length }} / {{ schemes.length }} 条</span></div>
+      <div class="maintenance-list"><div v-for="entry in filteredSchemes" :key="entry.id" :data-catalog-row="`scheme-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openScheme(entry)"><span>{{ entry.name }}<span class="row-details">{{ materials.find(m => m.id === entry.material_id)?.name || '通用方案' }} · {{ entry.items.length }} 个检验项目</span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteScheme(entry)">删除</button></div><p v-if="!filteredSchemes.length" class="module-empty">{{ schemes.length ? '没有匹配的方案，请调整或清空筛选。' : '暂无检验方案，点击“新增检验方案”维护项目与标准。' }}</p></div>
+    </section>
+    <section v-else-if="tab === 'partners'" class="admin-card"><div class="module-heading"><h2>供应商与生产商资料</h2><button class="primary" :disabled="busy" @click="openPartner()">新增单位</button></div><div class="maintenance-list"><div v-for="entry in partners" :key="entry.id" :data-catalog-row="`partner-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openPartner(entry)"><span>{{ entry.name }}<span class="row-details">{{ entry.kind === 'supplier' ? '供应商' : '生产商' }}<template v-if="entry.address"> · {{ entry.address }}</template></span></span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deletePartner(entry)">删除</button></div><p v-if="!partners.length" class="module-empty">暂无单位资料，点击“新增单位”建立供应商或生产商资料。</p></div></section>
+    <section v-else-if="tab === 'users'" class="admin-card"><div class="module-heading"><h2>人员列表</h2><button class="primary" :disabled="busy" @click="openAccount()">新增账号</button></div><div class="maintenance-list"><div v-for="entry in users" :key="entry.id" :data-catalog-row="`account-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy || (!superadmin && entry.role === 'superadmin')" @click="openAccount(entry)"><span>{{ entry.username }}<span class="row-details">{{ roleNames[entry.role] }} · {{ entry.active ? '启用' : '停用' }}</span></span><small>修改</small></button><button v-if="entry.role !== 'superadmin'" class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></div></div></section>
     <AuditLog v-else-if="tab === 'audit' && superadmin" />
-    <section v-else-if="tab === 'ledgers'" class="admin-card"><div class="module-heading"><h2>已建立台账</h2><button class="primary" :disabled="busy" @click="openCompany()">新增台账</button></div><div class="maintenance-list"><div v-for="entry in ledgers" :key="entry.id" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openCompany(entry)"><span>{{ entry.name }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteCompany(entry)">删除</button></div><p v-if="!ledgers.length" class="module-empty">暂无公司台账，点击“新增台账”建立台账。</p></div></section>
+    <section v-else-if="tab === 'ledgers'" class="admin-card"><div class="module-heading"><h2>已建立台账</h2><button class="primary" :disabled="busy" @click="openCompany()">新增台账</button></div><div class="maintenance-list"><div v-for="entry in ledgers" :key="entry.id" :data-catalog-row="`company-${entry.id}`" class="maintenance-row"><button class="maintenance-edit" :disabled="busy" @click="openCompany(entry)"><span>{{ entry.name }}</span><small>修改</small></button><button class="maintenance-delete" :disabled="busy" @click="deleteCompany(entry)">删除</button></div><p v-if="!ledgers.length" class="module-empty">暂无公司台账，点击“新增台账”建立台账。</p></div></section>
     <div v-else class="admin-columns"><section class="admin-card"><h2>智谱云端辅助</h2><p>模型：GLM-4.1V-Thinking-Flash</p><p class="muted">{{ cloudConfigured ? '已配置密钥，可测试连接或更新密钥。' : '尚未配置密钥，本地识别可以独立使用。' }}</p><div class="button-row"><button class="primary" :disabled="busy" @click="openCloud">{{ cloudConfigured ? '更新密钥' : '配置密钥' }}</button><button :disabled="busy || !cloudConfigured" @click="testCloud">{{ cloudTesting ? '测试中…' : '测试连接' }}</button><button :disabled="busy || !cloudConfigured" @click="cloudKey = ''; saveCloud()">清除密钥</button></div><p v-if="cloudTestMessage" :role="cloudTestOk ? 'status' : 'alert'" :class="cloudTestOk ? 'success' : 'error'">{{ cloudTestMessage }}</p></section><section class="admin-card"><h2>个人导出模板</h2><p>请从顶部“我的模板”选择本机文件夹，普通用户也可设置。</p><p class="muted">在 Word/WPS 中修改本地模板的签名图片并保存。导出时优先使用已修改的本地模板，不覆盖服务器默认模板。</p></section></div>
   </main>
 </template>
@@ -222,6 +253,7 @@ async function testCloud() {
 .maintenance-edit span{overflow-wrap:anywhere}
 .maintenance-edit small{flex-shrink:0;color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:6px 12px}
 .maintenance-delete{color:#a83232;flex-shrink:0}
+.catalog-filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin:22px 0}.catalog-filters label:first-child{flex:1;min-width:240px}.catalog-filters label{margin:0}.catalog-filters .muted{align-self:center;font-size:13px}
 .credential-view{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.credential-view label{max-width:440px;margin-bottom:12px}
 .standard-edit-row{grid-template-columns:1fr 1.5fr auto}
 @media(max-width:600px){.standard-edit-row{grid-template-columns:1fr}.module-heading{align-items:flex-start;gap:12px}.module-heading h2{font-size:17px}.module-heading button{padding:8px 10px;font-size:13px}.maintenance-edit{gap:8px;padding:10px 4px}.maintenance-edit small{padding:6px 8px}.admin-form{padding:20px 16px}}

@@ -43,7 +43,7 @@ test('物料新增和编辑在各自页面打开，取消不会保存草稿', as
 test('各小模块从自己的列表进入新增和修改页面，返回后丢弃草稿', async ({ page }) => {
   await openAdmin(page)
   const cases = [
-    { tab: '物料与检验标准', noun: '检验方案', label: '方案名称', name: '分页面方案', resource: 'schemes' },
+    { tab: '检验标准方案', noun: '检验方案', label: '方案名称', name: '分页面方案', resource: 'schemes' },
     { tab: '单位资料', noun: '单位', label: '单位名称', name: '分页面单位', resource: 'partners' },
     { tab: '账号与权限', noun: '账号', label: '人员账号', name: 'form-page-user', resource: 'users' },
     { tab: '公司台账', noun: '台账', label: '台账名称', name: '分页面台账', resource: 'ledgers' },
