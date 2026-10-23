@@ -75,7 +75,7 @@ test('日志上方提示30天清理，批量删除只删除勾选日志且筛选
   page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '批量删除日志', exact: true }).click()
   await expect(page.locator('tbody tr')).toHaveCount(1)
-  await expect(page.getByRole('status')).toContainText('已删除 2 条操作日志')
+  await expect(page.getByRole('status').filter({ hasText: '已删除 2 条操作日志' })).toBeVisible()
   await page.getByRole('button', { name: '全选本页日志', exact: true }).click()
   page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '批量删除日志', exact: true }).click()

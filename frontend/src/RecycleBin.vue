@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
+import PaginationBar from './PaginationBar.vue'
 import { api, json, raw, entryDate, recordSchema, type CheckRecord, type Ledger } from './api'
 
 const props = defineProps<{ administrator: boolean; ledgers: Ledger[]; ledgerId: number | null }>()
@@ -22,6 +23,11 @@ const visible = computed(() => rows.value.filter(row => (!selectedLedger.value |
   (!filters.arrivalTo || (!!row.fields.arrival_date && row.fields.arrival_date <= filters.arrivalTo)) &&
   (!filters.voidFrom || localDate(row.voided_at) >= filters.voidFrom) &&
   (!filters.voidTo || (!!row.voided_at && localDate(row.voided_at) <= filters.voidTo))))
+const page = ref(1)
+const pages = computed(() => Math.max(1, Math.ceil(visible.value.length / 50)))
+const pageRows = computed(() => visible.value.slice((page.value - 1) * 50, page.value * 50))
+watch([selectedLedger, query, filters], () => { page.value = 1 })
+watch(pages, value => { page.value = Math.min(page.value, value) })
 const selected = computed(() => visible.value.filter(row => selectedIds.value.includes(row.id)))
 function localDate(value: string | null) { return value ? new Date(value).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }) : '' }
 function clearFilters() {
@@ -96,14 +102,16 @@ onMounted(() => action(load))
         <button class="danger-button" :disabled="busy || !selected.length" @click="batchAction('delete')">批量永久删除</button>
       </div></div>
       <div class="table-scroll"><table class="ledger-table"><thead><tr><th v-if="administrator">选择</th><th>公司台账</th><th>录入日期</th><th>物料名称、型号</th><th>供应商或生产商</th><th>作废时间</th><th>自动删除时间</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="record in visible" :key="record.id"><td v-if="administrator"><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="busy" :aria-label="`选择回收记录${record.id}`"></td><td>{{ ledgers.find(ledger => ledger.id === record.ledger_id)?.name }}</td><td class="dates-cell">{{ entryDate(record.created_at) }}</td><td>{{ record.fields.material_name || '未填写物料' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ formatTime(record.voided_at) }}</td><td>{{ formatTime(record.voided_at, 30) }} 后</td><td><button class="text-button" :disabled="busy" @click="emit('open', record)">查看</button><button v-if="administrator" :disabled="busy" @click="restore(record)">还原</button><button v-if="administrator" class="danger-button" :disabled="busy" @click="remove(record)">永久删除</button></td></tr>
+        <tr v-for="record in pageRows" :key="record.id"><td v-if="administrator"><input v-model="selectedIds" type="checkbox" :value="record.id" :disabled="busy" :aria-label="`选择回收记录${record.id}`"></td><td>{{ ledgers.find(ledger => ledger.id === record.ledger_id)?.name }}</td><td class="dates-cell">{{ entryDate(record.created_at) }}</td><td>{{ record.fields.material_name || '未填写物料' }}</td><td>{{ record.fields.company_name || '—' }}</td><td>{{ formatTime(record.voided_at) }}</td><td>{{ formatTime(record.voided_at, 30) }} 后</td><td><button class="text-button" :disabled="busy" @click="emit('open', record)">查看</button><button v-if="administrator" :disabled="busy" @click="restore(record)">还原</button><button v-if="administrator" class="danger-button" :disabled="busy" @click="remove(record)">永久删除</button></td></tr>
       </tbody></table></div>
       <p v-if="!visible.length" class="empty">{{ busy ? '正在读取回收站…' : '回收站中没有符合条件的记录' }}</p>
+      <PaginationBar v-model:page="page" :total="visible.length" :disabled="busy" label="回收站分页" class="recycle-pagination" />
     </section>
   </main>
 </template>
 
 <style scoped>
+.recycle-pagination { padding: 20px 24px; }
 .recycle-panel > .muted { margin: 14px 24px; }
 .ledger-table { min-width: 1050px; }
 .ledger-table td:nth-child(n+4) { white-space: nowrap; }
