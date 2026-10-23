@@ -404,7 +404,7 @@ test('台账查看打开可打印预览，未检验记录提示不能预览Word'
   await page.request.post(`/api/records/${inspected.id}/check`, { data: { version: inspected.version } })
   await page.reload()
   await page.getByRole('button', { name: `进入${name}` }).click()
-  await page.getByRole('button', { name: '全选当前记录', exact: true }).click()
+  await page.getByRole('button', { name: '全选筛选结果', exact: true }).click()
   await page.getByRole('button', { name: '预览 / 打印', exact: true }).click()
   await expect(dialog).toContainText('共 2 条记录')
   await expect(dialog.locator('iframe')).toHaveAttribute('src', /^blob:/, { timeout: 30000 })

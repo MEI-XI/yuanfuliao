@@ -60,7 +60,7 @@ test('操作日志组合筛选并清空条件，按筛选结果显示数量', as
   await page.screenshot({ path: '../tmp/audit-filters-mobile.png', fullPage: true })
   await page.getByLabel('日志操作对象', { exact: true }).fill(`/absent/${ledger.id}`)
   await page.getByRole('button', { name: '筛选日志', exact: true }).click()
-  await expect(page.getByText('共 0 条 · 第 1 页', { exact: true })).toBeVisible()
+  await expect(page.getByText('筛选 0 条 · 已选 0 条本页日志', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '清空筛选', exact: true }).click()
   await expect(page.getByRole('row').filter({ hasText: '登录' }).first()).toBeVisible()
 })

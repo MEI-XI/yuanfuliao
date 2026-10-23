@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { z } from 'zod'
+import PaginationBar from './PaginationBar.vue'
 import { api, auditPageSchema, json, raw } from './api'
 
 const result = ref<z.infer<typeof auditPageSchema> | null>(null)
@@ -89,10 +90,7 @@ onMounted(() => load())
       </table>
       <p v-if="!result.items.length" class="module-empty">暂无操作日志。</p>
     </div>
-    <nav v-if="result" class="audit-pagination" aria-label="日志分页">
-      <span>每页 {{ result.page_size }} 条 · 第 {{ result.page }} / {{ Math.max(1, Math.ceil(result.total / result.page_size)) }} 页</span>
-      <div class="button-row"><button :disabled="busy || result.page <= 1" @click="load(result.page - 1)">上一页</button><button :disabled="busy || result.page * result.page_size >= result.total" @click="load(result.page + 1)">下一页</button></div>
-    </nav>
+    <PaginationBar v-if="result" :page="result.page" :total="result.total" :page-size="result.page_size" :disabled="busy" label="日志分页" @update:page="load" />
     <el-dialog v-model="detailOpen" title="操作日志详情" width="min(780px, 94vw)" append-to-body>
       <dl v-if="detailEntry" class="audit-detail">
         <dt>日志编号</dt><dd>{{ detailEntry.id }}</dd>
@@ -119,8 +117,6 @@ onMounted(() => load())
 .audit-detail dt { color: #64748b; }
 .audit-detail dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .audit-table time { white-space: nowrap; }
-.audit-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
-.audit-pagination .button-row { margin: 0; }
 .filters{padding:16px 0;margin:12px 0 0;gap:12px}.filters label{flex:1 1 140px;min-width:0;margin:0}.filters input[type="date"]{width:150px}.table-actions{padding:12px 0;gap:10px}.table-actions [role="status"]{font-weight:600;color:var(--teal)}.table-actions>div{display:flex;flex-wrap:wrap;gap:8px}.table-actions button+button{margin-left:0}
 @media(max-width:600px){.filters label{flex:1 1 125px}.filters input[type="date"]{width:100%}.module-heading h2{font-size:17px}.module-heading button{padding:8px 10px;font-size:13px}}
 </style>

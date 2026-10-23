@@ -79,7 +79,7 @@ test('日志上方提示30天清理，批量删除只删除勾选日志且筛选
   await page.getByRole('button', { name: '全选本页日志', exact: true }).click()
   page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '批量删除日志', exact: true }).click()
-  await expect(page.getByText('共 0 条 · 第 1 页', { exact: true })).toBeVisible()
+  await expect(page.getByText('筛选 0 条 · 已选 0 条本页日志', { exact: true })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: '../tmp/audit-retention-mobile.png', fullPage: true })
 })
