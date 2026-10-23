@@ -16,7 +16,7 @@ const error = ref('')
 const notice = ref('')
 const selectedIds = ref<number[]>([])
 const visible = computed(() => rows.value.filter(row => (!selectedLedger.value || row.ledger_id === selectedLedger.value) &&
-  (!query.value.trim() || [row.fields.material_name, row.fields.company_name, row.fields.specification, row.fields.notes, String(row.id)].some(value => value.toLowerCase().includes(query.value.trim().toLowerCase()))) &&
+  (!query.value.trim() || (query.value.trim() === '未填写物料' && !row.fields.material_name.trim()) || [row.fields.material_name, row.fields.company_name, row.fields.specification, row.fields.notes, String(row.id)].some(value => value.toLowerCase().includes(query.value.trim().toLowerCase()))) &&
   (!filters.inspection || row.inspection_enabled === (filters.inspection === 'inspected')) &&
   (!filters.creator || row.creator_id === filters.creator) &&
   (!filters.arrivalFrom || (row.fields.arrival_date || '') >= filters.arrivalFrom) &&
