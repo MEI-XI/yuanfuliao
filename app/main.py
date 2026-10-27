@@ -66,8 +66,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         with engine.begin() as connection:
             migration.attributes['connection'] = connection
             command.upgrade(migration, 'head')
-        from app.recognition import LocalScanner, cloud_extract
-        app.state.scan_image = LocalScanner()
+        from app.recognition import cloud_extract
+        from app.gateway_ocr import configured_scanner
+        app.state.scan_image = configured_scanner()
         def configured_cloud(paths, texts):
             with Session(engine) as session:
                 setting = session.get(Setting, "zhipu_key")

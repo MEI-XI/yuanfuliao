@@ -115,9 +115,9 @@ const recognitionLabel = computed(() => {
   const job = current.job
   if (!job) return ''
   if (job.local_status === 'queued') return `本地排队中 · 前方约 ${job.queue_ahead} 个任务`
-  if (job.local_status === 'running') return `本地识别中 · 共 ${job.image_ids.length} 张图片`
-  if (job.local_status === 'failed') return job.error || '本地识别失败，可以重试或手动填写'
-  return '本地识别已完成'
+  if (job.local_status === 'running') return `基础识别中 · 共 ${job.image_ids.length} 张图片`
+  if (job.local_status === 'failed') return job.error || '基础识别失败，可以重试或手动填写'
+  return '基础识别已完成'
 })
 const catalog = ref<z.infer<typeof materialSchema>[]>([])
 const standards = ref<z.infer<typeof schemeSchema>[]>([])
@@ -865,12 +865,12 @@ async function download(kind: 'xlsx' | 'docx') {
     <main v-else class="editor-page">
       <nav class="breadcrumb"><button @click="leaveEditor">{{ editorReturn === 'recycle' ? '回收站' : ledger?.name + '台账' }}</button><span>/</span><span>{{ editing ? '查看与核对' : '新增查验记录' }}</span></nav>
       <div class="editor-heading"><div><h1>{{ editing ? fields.material_name || '查验记录' : '图片识别与核对' }}</h1><p class="muted">对照原图核对，未获取的信息可以手动填写或留空。</p></div><div v-if="editing" class="record-meta"><span class="status" :class="editing.status">{{ statusText[editing.status] }}</span><small>创建人：{{ people.find(p => p.id === editing?.creator_id)?.username }}<br>核对人：{{ people.find(p => p.id === editing?.checker_id)?.username || '未核对' }}</small><button @click="showHistory">查看修改历史</button><button v-if="administrator && editing.status !== 'void'" class="danger-button" :disabled="busy" @click="voidRecord()">作废记录</button></div></div>
-      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" :disabled="busy || !!batchRetry" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing || busy || !!batchRetry" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox" :disabled="recognizing">云端辅助</label><small>启用后会将照片发送给智谱；不可用时保留本地结果</small>
+      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" :disabled="busy || !!batchRetry" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing || busy || !!batchRetry" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox" :disabled="recognizing">云端辅助</label><small>启用后会将照片发送给智谱；不可用时保留基础识别结果</small>
         <section class="recognition-controls" aria-label="识别操作与进度">
           <button class="primary" :disabled="busy || !!batchRetry || recognizing || !groups.some(g => g.images.length)" @click="startRecognition">{{ recognizing ? '识别处理中…' : interrupted ? '重试获取状态' : '开始识别' }}</button>
           <div v-if="recognitionLabel" class="recognition-progress" :class="{ working: recognizing, failed: group?.requestState === 'error' || group?.job?.local_status === 'failed' }" role="status" aria-live="polite">
             <strong><span v-if="recognizing" class="recognition-spinner" aria-hidden="true"></span>{{ recognitionLabel }}</strong>
-            <span v-if="group?.job">云端辅助：{{ { queued: '等待本地结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，本地结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
+            <span v-if="group?.job">云端辅助：{{ { queued: '等待基础识别结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，基础识别结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
             <span v-if="group?.job?.cloud_status === 'failed' && group.job.cloud_error" class="error">{{ group.job.cloud_error }}</span>
             <span v-if="recognizing">可继续人工填写，无需重复点击识别</span>
           </div>

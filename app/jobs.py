@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models import Photo, RecognitionJob
 from app.recognition import CloudRecognitionError, combine_fields
 from app.storage import photo_path
+from app.gateway_ocr import GatewayRecognitionError
 
 
 def run_local(app, job_id):
@@ -21,10 +22,11 @@ def run_local(app, job_id):
             session.commit()
         if cloud_enabled:
             app.state.cloud_pool.submit(run_cloud, app, job_id, paths, evidence)
-    except Exception:
+    except Exception as exc:
         with Session(app.state.engine) as session:
             job = session.get(RecognitionJob, job_id)
-            job.local_status, job.error = "failed", "本地识别失败，可检查图片后重试或手动填写"
+            job.local_status = "failed"
+            job.error = str(exc) if isinstance(exc, GatewayRecognitionError) else "基础识别失败，可检查图片后重试或手动填写"
             job.cloud_status = "disabled"
             session.commit()
 
