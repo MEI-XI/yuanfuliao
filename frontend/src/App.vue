@@ -257,6 +257,12 @@ function markDirty(key: string) {
   current.dirty.add(key)
   if (key === 'shelf_life') current.expiry.autoShelfLife = null
   if (key === 'expiry_date') current.expiry.autoExpiryDate = null
+  if ((key === 'production_dates' || key === 'shelf_life') && current.fields.shelf_life
+    && (current.dirty.has('shelf_life') || current.fields.shelf_life !== current.expiry.autoShelfLife)) {
+    // A new manual source value starts a fresh calculation, even for saved dates.
+    current.dirty.delete('expiry_date')
+    current.expiry.autoExpiryDate = current.fields.expiry_date || null
+  }
 }
 const expiryResultSchema = fieldsSchema.pick({ shelf_life: true, expiry_date: true }).extend({ warnings: z.array(z.string()) })
 const expiryWarnings = computed(() => [...new Set([shelfLifeDayNotice(fields.value.shelf_life), ...(group.value?.expiry.warnings || [])].filter(Boolean))])
