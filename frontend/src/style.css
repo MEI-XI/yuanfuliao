@@ -31,8 +31,8 @@
 .inspection-toolbar { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 12px; align-items: end; }
 .inspection-help { margin: 16px 0 20px; }
 .inspection-table { border-collapse: collapse; table-layout: fixed; width: 100%; }
-.inspection-table .item-name-column { width: 16%; }
-.inspection-table .standard-column { width: 43%; }
+.inspection-table .item-name-column { width: 22%; }
+.inspection-table .standard-column { width: 37%; }
 .inspection-table .result-column, .inspection-table .conclusion-column { width: 16%; }
 .inspection-table .item-action-column { width: 9%; }
 .inspection-table thead th { padding: 15px 10px; text-align: left; background: #e5f3f4; color: #244951; font-size: 15px; font-weight: 600; }

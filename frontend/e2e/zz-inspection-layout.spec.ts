@@ -41,7 +41,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await expect(standards).toHaveCount(3)
   await expectFullText(standards.nth(1))
   const standardWidth = (await standards.first().boundingBox())!.width
-  expect(standardWidth).toBeGreaterThan((await page.getByLabel('项目', { exact: true }).first().boundingBox())!.width * 2)
+  expect(standardWidth).toBeGreaterThan((await page.getByLabel('项目', { exact: true }).first().boundingBox())!.width)
   for (let index = 0; index < 3; index++) {
     await page.getByRole('combobox', { name: '检验结果', exact: true }).nth(index).fill('符合')
     await page.getByRole('combobox', { name: '判定结论', exact: true }).nth(index).fill('合格')
