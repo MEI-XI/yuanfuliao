@@ -30,7 +30,11 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await page.getByRole('button', { name: `进入${ledger.name}`, exact: true }).click()
   await page.getByRole('button', { name: '上传与录入', exact: true }).click()
   await page.getByLabel('物料名称、型号', { exact: true }).fill('长标准示例物料')
+  const photoWidth = (await page.locator('.image-panel').boundingBox())!.width
+  const formWidth = (await page.locator('.form-panel').boundingBox())!.width
   await page.getByRole('radio', { name: '检验', exact: true }).check()
+  await expect.poll(async () => (await page.locator('.image-panel').boundingBox())!.width).toBe(photoWidth)
+  await expect.poll(async () => (await page.locator('.form-panel').boundingBox())!.width).toBe(formWidth)
   await page.getByRole('combobox', { name: '检验标准方案', exact: true }).fill(scheme.name)
   await page.getByRole('option', { name: scheme.name, exact: true }).click()
   const standards = page.getByRole('textbox', { name: '标准规定', exact: true })
