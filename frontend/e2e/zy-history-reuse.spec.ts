@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test'
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'wait' })
+})
+
 test('云端失败后仍自动带入历史，本次日期数量及人工输入保留', async ({ page }) => {
   await page.request.post('/api/setup', { data: { username: 'admin', password: 'browser-test-password' } })
   await page.goto('/')
@@ -58,7 +62,8 @@ test('英文原文可查看，中文翻译补空白且不覆盖人工输入', as
     await route.fulfill({ response, json: { ...job, local_status: 'done', cloud_status: 'done', english_detected: true,
       fields: { material_name: 'Glycine', company_name: 'Example Food Co.', production_dates: ['2026-01-14'] },
       cloud_fields: { material_name: '甘氨酸', company_name: '示例食品公司' },
-      evidence: [{ texts: ['Product Name: Glycine'], boxes: [] }], conflicts: {},
+      evidence: [{ texts: ['Product Name: Glycine'], boxes: [] }], conflicts: { material_name: ['Glycine', '甘氨酸'] },
+      candidate_defaults: { material_name: '甘氨酸' },
       review_suggestions: { fields: {}, conflicts: {}, sources: [] },
     } })
   })
@@ -97,6 +102,9 @@ test('先识别物料再自动带入最近已核对台账及全部检验项目�
   await page.getByRole('button', { name: '进入自动整套复用测试' }).click()
   await page.getByRole('button', { name: '上传与录入' }).click()
   await expect(page.getByRole('radio', { name: '未检验', exact: true })).toBeChecked()
+  // This case verifies unambiguous local identity; the cloud fixture intentionally
+  // returns a different name, which now correctly prevents automatic history reuse.
+  await page.getByRole('checkbox', { name: '云端辅助', exact: true }).uncheck()
   await page.getByLabel('选择包装照片').setInputFiles('../tests/fixtures/label.png')
   await page.getByRole('button', { name: '开始识别', exact: true }).click()
   await expect(page.getByRole('button', { name: '开始识别', exact: true })).toBeEnabled()

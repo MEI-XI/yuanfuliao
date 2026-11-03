@@ -685,7 +685,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return FileResponse(photo_path(photo.path), media_type=photo.media_type, headers={"Cache-Control": "private, no-store"})
 
     def job_view(job, session):
-        from app.review_feedback import checked_suggestions
+        from app.review_feedback import catalog_name_suggestions, checked_suggestions
         from app.english_labels import is_english_packaging
         result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
         result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
@@ -700,6 +700,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
         result['queue_ahead'] = session.scalar(select(func.count()).select_from(RecognitionJob).where(
             RecognitionJob.id < job.id, RecognitionJob.local_status.in_(['queued', 'running']))) if job.local_status == 'queued' else 0
         result['review_suggestions'] = checked_suggestions(job, session)
+        names = list(dict.fromkeys(value for value in [result['fields'].get('material_name'), result['cloud_fields'].get('material_name')] if value))
+        if len(names) > 1:
+            result['conflicts']['material_name'] = list(dict.fromkeys(names + result['conflicts'].get('material_name', [])))
+        catalog = catalog_name_suggestions(job, session)
+        if catalog['candidates']:
+            result['conflicts']['material_name'] = list(dict.fromkeys(result['conflicts'].get('material_name', []) + catalog['candidates']))
+        from app.recognition_quality import candidate_review
+        result['candidate_defaults'], result['field_warnings'] = candidate_review(result['fields'], result['cloud_fields'], result['conflicts'], english_detected=result['english_detected'])
+        confirmed_name = result['review_suggestions']['fields'].get('material_name') or catalog['name']
+        if confirmed_name:
+            result['candidate_defaults']['material_name'] = confirmed_name
         return result
 
     def validate_job(job_id, image_ids, ledger_id, session):

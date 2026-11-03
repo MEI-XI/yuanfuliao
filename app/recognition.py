@@ -15,6 +15,8 @@ from app.expiry import complete_expiry_fields, normalize_shelf_life
 from app.english_labels import DATE_LABEL, parse_english_labels
 from app.schemas import RecordFields, ReportFields
 from app.party_candidates import apply_party_options, extract_party_options, merge_party_options
+from app.material_candidates import material_candidates
+from app.recognition_quality import incomplete_ocr_value, review_incomplete_values
 
 OCR_FIELDS = {"material_name", "production_dates", "specification", "company_name", "address", "contact",
               "shelf_life", "expiry_date", "address_source", "contact_source", "arrival_date", "received_quantity",
@@ -101,7 +103,7 @@ def fill_numeric_dates(fields, texts, conflicts):
         fields['expiry_date'] = dates[-1]
 
 
-def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
+def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True, raw_text=''):
     """Extract explicit labels and prominent product titles; never infer judgments."""
     conflicts = conflicts if conflicts is not None else {}
     fields, companies = parse_english_labels(texts, conflicts), {}
@@ -245,21 +247,10 @@ def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
         dimension = next((line for line in lines if re.fullmatch(r'(?:\(W\)|（W）)?\d+(?:\.\d+)?mm[×*]\d+(?:\.\d+)?m', line, re.I)), '')
         if dimension:
             fields['specification'] = dimension
-    if 'material_name' not in fields:
-        candidates = []
-        for i, line in enumerate(lines):
-            # A product title may contain an L-/DL- prefix, model or dimensions.
-            if (re.fullmatch(r'[A-Za-z0-9\u4e00-\u9fff()（）/.*×-]{2,45}', line)
-                and re.search(r'[\u4e00-\u9fff]', line)
-                and not re.search(r'公司|工厂|生产|供应|参考|合格|食品用|食品添加剂|营养|配料|电话|避免|禁止|堆码|贮|储|保存|干燥|阴凉|许可证|脂肪|蛋白质|碳水|能量|含量|保质|产地|加工|方法|使用|条件|有限公司|资料', line)):
-                # Product-type endings are stronger evidence than a short brand.
-                product = bool(re.search(r'(?:酸|粉|油|酱|香精|提取物|抽提物|膜.*|袋.*|糖|盐|消泡剂)$', line))
-                height = min(np.linalg.norm(np.asarray(boxes[i][3]) - boxes[i][0]), np.linalg.norm(np.asarray(boxes[i][1]) - boxes[i][0])) if len(boxes) == len(lines) else 1
-                if product:
-                    candidates.append((height, line))
-        if candidates:
-            fields['material_name'] = max(candidates)[1]
-    if fields.get('material_name'):
+    names, needs_review = material_candidates(texts, boxes, raw_text=raw_text)
+    if names:
+        fields['material_name'] = names[0]
+    if fields.get('material_name') and len(names) <= 1:
         model = next((re.match(r'^型号:(.+)', v)[1] for v in lines if re.match(r'^型号:(.+)', v)), '')
         if not model:
             for i, line in enumerate(lines):
@@ -268,6 +259,10 @@ def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
                     break
         if model and model not in fields['material_name']:
             fields['material_name'] += ' ' + model
+            if names:
+                names = [fields['material_name']]
+    if names and needs_review:
+        conflicts['material_name'] = list(dict.fromkeys(conflicts.get('material_name', []) + names))
     if production:
         fields['production_dates'] = production
     if infer_numeric_dates:
@@ -319,6 +314,7 @@ def parse_texts(texts, boxes=None, conflicts=None, *, infer_numeric_dates=True):
                     if line.startswith(('生产', '厂家')):
                         fields['address_source'] = 'manufacturer'
                     break
+    review_incomplete_values(fields, conflicts, texts)
     apply_party_options(fields, conflicts, extract_party_options(texts))
     return fields
 
@@ -327,7 +323,7 @@ def combine_fields(results):
     fields, conflicts = {}, {}
     party_options = {}
     for result in results:
-        extracted = parse_texts(result['texts'], result.get('boxes'), conflicts, infer_numeric_dates=False)
+        extracted = parse_texts(result['texts'], result.get('boxes'), conflicts, infer_numeric_dates=False, raw_text=result.get('raw_text', ''))
         party_options = merge_party_options(party_options, extracted.pop('_party_options', {}))
         additional = {}
         contact_sources = {}
@@ -432,6 +428,8 @@ def cloud_extract(paths, texts, api_key):
         "只有一个日期时作为生产日期。明确日期标签优先，多个明确的生产日期保留。"
         "仅在判别日期时排除电话号码、批号数字及拍照水印；contact中的电话和batch_number中的批号仍须正常提取。"
         "净含量和单袋规格不是接收数量，不根据包装袋数量推算收货数量。严禁生成本次检验结果或判定结论。"
+        "品名优先读取产品名称标签及产品主标题，保留制品等完整名称和型号，不以常见词尾截断，不把品牌、厂家或说明标题当作物料名称。"
+        "规格或保质期的单位被遮挡、缺失时保留可读原文为候选，不补猜单位。名称候选按图片证据强弱排序。"
         "不确定或有多种可能的值不要填入正常字段，放在candidates对象中，如{\"candidates\":{\"company_name\":[\"甲公司\",\"乙公司\"]}}。"
         "必须完整列出每张图片中所有供应商、生产商名称及其地址，不能只保留一个。"
         "另外返回party_options对象，company_name和address分别为候选数组，每项格式为{\"value\":\"识别文字或中文译文\",\"source\":\"supplier或manufacturer或空字符串\"}。"
@@ -473,6 +471,9 @@ def cloud_extract(paths, texts, api_key):
         for key, value in values.items():
             if key not in OCR_FIELDS or value is None or value == '':
                 continue
+            if incomplete_ocr_value(key, value):
+                candidates.setdefault(key, []).append(str(value).strip())
+                continue
             try:
                 schema = ReportFields if key in REPORT_OCR_FIELDS else RecordFields
                 parsed = schema.model_validate({key: value}).model_dump(mode='json', exclude_unset=True)
@@ -490,6 +491,10 @@ def cloud_extract(paths, texts, api_key):
                 for value in options:
                     if not isinstance(value, str) or not value.strip():
                         continue
+                    if incomplete_ocr_value(key, value):
+                        if value.strip() not in candidates.setdefault(key, []):
+                            candidates[key].append(value.strip())
+                        continue
                     schema = ReportFields if key in REPORT_OCR_FIELDS else RecordFields
                     try:
                         parsed = schema.model_validate({key: [value] if key == 'production_dates' else value}).model_dump(mode='json', exclude_unset=True)
@@ -500,8 +505,12 @@ def cloud_extract(paths, texts, api_key):
                         warnings.append({'field': key, 'message': '云端候选格式不正确，请人工核对填写'})
                 if candidates.get(key):
                     previous = safe.pop(key, None)
-                    if key in {'company_name', 'address'} and previous and previous not in candidates[key]:
+                    if key in {'company_name', 'address', 'material_name', 'specification'} and previous and previous not in candidates[key]:
                         candidates[key].insert(0, previous)
+                    if previous and key == 'specification' and all(
+                        option == previous or incomplete_ocr_value(key, option) for option in candidates[key]
+                    ):
+                        safe[key] = previous
         party_options = merge_party_options(values.get('party_options', {}))
         for key in ('company_name', 'address'):
             if safe.get(key):

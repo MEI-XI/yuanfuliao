@@ -48,6 +48,8 @@ export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
   cloud_status: z.enum(['disabled', 'queued', 'running', 'done', 'failed']),
   fields: suggestionSchema, cloud_fields: suggestionSchema,
+  candidate_defaults: suggestionSchema.default({}),
+  field_warnings: z.array(z.object({ field: z.string(), message: z.string() })).default([]),
   party_options: z.object({ company_name: z.array(partyOptionSchema), address: z.array(partyOptionSchema) }).default({ company_name: [], address: [] }),
   english_detected: z.boolean().default(false),
   evidence: z.array(z.object({ texts: z.array(z.string()), boxes: z.array(z.unknown()),

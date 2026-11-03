@@ -390,7 +390,7 @@ function suggestionsFor(key: string): unknown[] {
   if (!job) return []
   const current: unknown = Reflect.get(reportOcrKeys.has(key) ? report.value : fields.value, key)
   const values: unknown[] = [...(job.conflicts[key] || []), ...(job.review_suggestions.conflicts[key] || [])]
-  for (const proposals of [job.fields, job.cloud_fields, job.review_suggestions.fields]) values.push(Reflect.get(proposals, key))
+  for (const proposals of [job.fields, job.cloud_fields, job.candidate_defaults, job.review_suggestions.fields]) values.push(Reflect.get(proposals, key))
   if (key === 'company_name' || key === 'address') {
     const options = [...job.party_options[key]]
     for (const value of values) if (typeof value === 'string' && value && !options.some(option => option.value === value)) options.push({ value, source: '' })
@@ -399,11 +399,15 @@ function suggestionsFor(key: string): unknown[] {
   const unique = new Map<string, unknown>()
   for (const value of values) {
     const display = formatSuggestion(value)
-    if (display && display !== formatSuggestion(current)) unique.set(display, value)
+    if (display && (key === 'material_name' || display !== formatSuggestion(current))) unique.set(display, value)
   }
   return [...unique.values()]
 }
-function warningsFor(key: string) { return group.value?.job?.cloud_warnings.filter(warning => warning.field === key).map(warning => warning.message) || [] }
+function warningsFor(key: string) {
+  const job = group.value?.job
+  if (!job) return []
+  return [...new Set([...job.field_warnings, ...job.cloud_warnings].filter(warning => warning.field === key).map(warning => warning.message))]
+}
 function formatSuggestion(value: unknown) { return Array.isArray(value) ? value.join('、') : String(value ?? '') }
 const editable = computed(() => !editing.value || (editing.value.status !== 'void' && (administrator.value || editing.value.creator_id === user.value?.id)))
 const statusText = { pending: '待核对', checked: '已核对', void: '作废' }
@@ -756,7 +760,7 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
     current.job = job
     if (fill && ((!localApplied && job.local_status === 'done') || (!cloudApplied && job.cloud_status === 'done'))) {
       // Current-photo values fill blanks. Verified material history is applied below.
-      const sources = [...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
+      const sources = [job.candidate_defaults, ...(job.local_status === 'done' ? [job.fields] : []), ...(job.cloud_status === 'done' ? [job.cloud_fields] : [])]
       for (const proposals of sources) for (const [key, value] of Object.entries(proposals)) {
         // Keep English prose as a selectable original; let Chinese translations
         // fill blanks when they arrive. Codes, numbers and dates remain usable.
@@ -782,7 +786,7 @@ async function monitorJob(current: DraftGroup, jobId: number, generation: number
           const existingSource: unknown = Reflect.get(current.fields, sourceKey)
           if (current.dirty.has(sourceKey) || (existingSource && existingSource !== source)) continue
         }
-        if (!current.dirty.has(key) && !job.conflicts[key] && (!existing || (Array.isArray(existing) && !existing.length))) {
+        if (!current.dirty.has(key) && (!job.conflicts[key] || Reflect.get(job.candidate_defaults, key) === value) && (!existing || (Array.isArray(existing) && !existing.length))) {
           const parsed = fieldsSchema.safeParse({ ...current.fields, [key]: value, ...(paired ? { [sourceKey]: source } : {}) })
           if (parsed.success) Object.assign(current.fields, parsed.data)
         }
