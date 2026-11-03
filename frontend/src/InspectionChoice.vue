@@ -48,7 +48,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
 
 <template>
   <div ref="root" class="inspection-choice" @keydown.esc.stop.prevent="open = false" @focusout="focusOut">
-    <label>{{ label }}
+    <label><span class="inspection-field-label">{{ label }}</span>
       <span class="choice-input">
       <input :value="modelValue" :aria-label="label" role="combobox" :aria-expanded="open" aria-autocomplete="none" placeholder="选择或输入"
         @focus="open = true; request()" @click="open = true" @input="edit" @blur="remember" @keydown.down.prevent="open = true">
