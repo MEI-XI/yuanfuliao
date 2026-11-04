@@ -28,7 +28,6 @@ def test_english_labels_keep_original_fields_when_cloud_disabled(client):
 def test_english_cloud_translation_is_returned_for_review_and_failure_keeps_local(client, monkeypatch):
     bootstrap(client)
     ledger = new_ledger(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-only-key'})
     real_client = httpx.Client
     requests = []
 

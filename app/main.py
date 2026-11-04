@@ -24,8 +24,8 @@ from sqlalchemy import create_engine, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, Setting, User, utcnow
-from app.schemas import BatchRecordCreate, BatchRecordSelection, CloudSettingInput, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, ShelfLifeInput, UserChange, UserCreate, VersionInput
+from app.models import Base, BatchSubmission, History, Ledger, LoginSession, Material, Partner, Photo, RecognitionJob, Record, Scheme, User, utcnow
+from app.schemas import BatchRecordCreate, BatchRecordSelection, Credentials, ExportInput, LedgerInput, MaterialInput, PartnerInput, RecognitionInput, RecordChange, RecordCreate, SchemeInput, ShelfLifeInput, UserChange, UserCreate, VersionInput
 from app.recycle import RecycleCleaner, record_expired, register_recycle_routes
 from app.storage import photo_path
 from app.credentials import encrypt_password, decrypt_password
@@ -66,15 +66,9 @@ def create_app(database_url: str | None = None) -> FastAPI:
         with engine.begin() as connection:
             migration.attributes['connection'] = connection
             command.upgrade(migration, 'head')
-        from app.recognition import cloud_extract
-        from app.gateway_ocr import configured_scanner
+        from app.gateway_ocr import configured_auxiliary, configured_scanner
         app.state.scan_image = configured_scanner()
-        def configured_cloud(paths, texts):
-            with Session(engine) as session:
-                setting = session.get(Setting, "zhipu_key")
-                api_key = setting.value if setting else os.getenv("ZHIPU_API_KEY", "")
-            return cloud_extract(paths, texts, api_key)
-        app.state.cloud_extract = configured_cloud
+        app.state.cloud_extract = configured_auxiliary()
         app.state.local_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-ocr")
         app.state.cloud_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cloud-vision")
         with Session(engine) as session:
@@ -689,7 +683,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def job_view(job, session):
         from app.review_feedback import catalog_name_suggestions, checked_suggestions
         from app.english_labels import is_english_packaging
-        result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
+        result = {key: getattr(job, key) for key in ("id", "image_ids", "local_status", "cloud_status", "cloud_thinking", "fields", "cloud_fields", "evidence", "conflicts", "error", "cloud_error")}
         result['cloud_warnings'] = result['cloud_fields'].get('_warnings', [])
         from app.party_candidates import merge_party_options
         result['party_options'] = merge_party_options(job.fields.get('_party_options', {}), job.cloud_fields.get('_party_options', {}))
@@ -737,10 +731,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
             RecognitionJob.owner_id == user.id, RecognitionJob.ledger_id == ledger_id,
             or_(RecognitionJob.local_status.in_(['queued', 'running']), RecognitionJob.cloud_status.in_(['queued', 'running']))))
         for existing in active:
-            if set(existing.image_ids) == set(body.image_ids) and existing.cloud_enabled == body.cloud_enabled:
+            if (set(existing.image_ids) == set(body.image_ids) and existing.cloud_enabled == body.cloud_enabled
+                    and (not body.cloud_enabled or existing.cloud_thinking == body.cloud_thinking)):
                 return job_view(existing, session)
         job = RecognitionJob(ledger_id=ledger_id, owner_id=user.id, image_ids=list(dict.fromkeys(body.image_ids)), cloud_enabled=body.cloud_enabled,
-                             cloud_status="queued" if body.cloud_enabled else "disabled")
+                             cloud_thinking=body.cloud_thinking, cloud_status="queued" if body.cloud_enabled else "disabled")
         session.add(job)
         session.commit()
         result = job_view(job, session)
@@ -760,22 +755,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return job_view(job, session)
 
     @app.get("/api/settings/cloud")
-    def cloud_settings(user: User = Depends(administrator), session: Session = Depends(db)):
-        setting = session.get(Setting, "zhipu_key")
-        return {"configured": bool(setting.value if setting else os.getenv("ZHIPU_API_KEY", "")), "model": "glm-4.1v-thinking-flash"}
-
-    @app.put("/api/settings/cloud")
-    def set_cloud(body: CloudSettingInput, user: User = Depends(administrator), session: Session = Depends(db)):
-        session.merge(Setting(key="zhipu_key", value=body.api_key))
-        session.commit()
-        return {"configured": bool(body.api_key), "model": "glm-4.1v-thinking-flash"}
+    def cloud_settings(user: User = Depends(administrator)):
+        from app.gateway_ocr import auxiliary_status
+        return auxiliary_status()
 
     @app.post("/api/settings/cloud/test")
     def test_cloud(user: User = Depends(administrator)):
         from app.recognition import CloudRecognitionError
         try:
-            app.state.cloud_extract([], [["品名：连接测试物料"]])
-            return {"ok": True, "message": "连接成功：已验证密钥和模型调用。图片识别效果请上传包装照片验证。"}
+            app.state.cloud_extract([], [["品名：连接测试物料"]], "disabled")
+            return {"ok": True, "message": "DeepSeek 连接成功：已验证网关密钥和关闭思考模式。图片识别效果请上传包装照片验证。"}
         except CloudRecognitionError as exc:
             return {"ok": False, "message": str(exc)}
         except Exception:

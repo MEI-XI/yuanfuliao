@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 
 import psycopg
 import pytest
@@ -15,6 +16,10 @@ from app.main import create_app
 def client(tmp_path, monkeypatch):
     # Each test owns a schema. It never deletes or reads the user's business data.
     url = os.environ["TEST_DATABASE_URL"]
+    gateway_config = tmp_path / 'ocr-gateway.json'
+    gateway_config.write_text(json.dumps({'base_url': 'http://ocr-gateway.test/v1', 'model': 'PaddleOCR-VL-1.5-0.9B', 'protected_key': 'test-protected'}), encoding='utf-8')
+    monkeypatch.setenv('OCR_GATEWAY_CONFIG', str(gateway_config))
+    monkeypatch.setattr('app.gateway_ocr.decrypt_gateway_key', lambda path: 'test-only-gateway-key')
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     templates = tmp_path / "templates"
     templates.mkdir()

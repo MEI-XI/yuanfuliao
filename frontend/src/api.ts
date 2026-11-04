@@ -47,6 +47,7 @@ export const partyOptionSchema = z.object({ value: z.string(), source: z.enum(['
 export const jobSchema = z.object({
   id: z.number(), image_ids: z.array(z.number()), local_status: z.enum(['queued', 'running', 'done', 'failed']),
   cloud_status: z.enum(['disabled', 'queued', 'running', 'done', 'failed']),
+  cloud_thinking: z.enum(['disabled', 'low']).nullable().default(null),
   fields: suggestionSchema, cloud_fields: suggestionSchema,
   candidate_defaults: suggestionSchema.default({}),
   field_warnings: z.array(z.object({ field: z.string(), message: z.string() })).default([]),

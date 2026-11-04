@@ -199,7 +199,4 @@ class PartnerInput(Input):
 class RecognitionInput(Input):
     image_ids: list[int] = Field(min_length=1, max_length=40)
     cloud_enabled: bool = True
-
-
-class CloudSettingInput(Input):
-    api_key: str = Field(max_length=2000)
+    cloud_thinking: Literal["disabled", "low"] = "disabled"

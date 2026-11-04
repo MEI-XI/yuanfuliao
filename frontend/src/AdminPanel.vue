@@ -83,11 +83,11 @@ const partner = reactive<{ id: number; name: string; kind: 'supplier' | 'manufac
 const account = reactive<User & { password: string }>({ id: 0, username: '', password: '', role: 'user', active: true })
 const credential = ref<{ kind: 'hidden' } | { kind: 'unavailable' } | { kind: 'visible'; password: string }>({ kind: 'hidden' })
 const company = reactive({ id: 0, name: '' })
-const cloudKey = ref(''), cloudConfigured = ref(false)
+const cloudConfigured = ref(false), cloudModel = ref('deepseek-flash')
 const cloudTesting = ref(false), cloudTestMessage = ref(''), cloudTestOk = ref(false)
 type EditorKind = 'material' | 'scheme' | 'partner' | 'account' | 'company'
 const editorNames = { material: '物料', scheme: '检验方案', partner: '单位', account: '账号', company: '台账' }
-const editor = ref<{ kind: EditorKind | 'cloud'; title: string } | null>(null)
+const editor = ref<{ kind: EditorKind; title: string } | null>(null)
 const formHeading = ref<HTMLElement | null>(null)
 let returnPosition: { tab: string; kind: EditorKind; id: number; scrollY: number } | null = null
 async function restoreListPosition() {
@@ -144,11 +144,6 @@ function openCompany(entry?: Ledger) {
   Object.assign(company, entry || { id: 0, name: '' })
   void showEditor('company', entry?.name)
 }
-async function openCloud() {
-  cloudKey.value = ''; cloudTestMessage.value = ''; error.value = ''; notice.value = ''
-  editor.value = { kind: 'cloud', title: cloudConfigured.value ? '更新密钥' : '配置密钥' }
-  await nextTick(); formHeading.value?.focus(); formHeading.value?.scrollIntoView({ block: 'start' })
-}
 function closeEditor() {
   credential.value = { kind: 'hidden' }
   editor.value = null
@@ -157,16 +152,16 @@ function closeEditor() {
   Object.assign(partner, { id: 0, name: '', kind: 'supplier', address: '', contact: '' })
   Object.assign(account, { id: 0, username: '', password: '', role: 'user', active: true })
   Object.assign(company, { id: 0, name: '' })
-  cloudKey.value = ''
   error.value = ''
   void restoreListPosition()
 }
 async function refresh() {
-  const result = await Promise.all([api('/materials', z.array(materialSchema)), api('/schemes', z.array(schemeSchema)), api('/partners', z.array(partnerSchema)), api('/users', z.array(userSchema)), api('/ledgers', z.array(ledgerSchema)), api('/settings/cloud', z.object({ configured: z.boolean() }))])
+  const result = await Promise.all([api('/materials', z.array(materialSchema)), api('/schemes', z.array(schemeSchema)), api('/partners', z.array(partnerSchema)), api('/users', z.array(userSchema)), api('/ledgers', z.array(ledgerSchema)), api('/settings/cloud', z.object({ configured: z.boolean(), model: z.string() }))])
   ;[materials.value, schemes.value, partners.value, users.value, ledgers.value] = result
   selectedMaterials.value = selectedMaterials.value.filter(id => materials.value.some(entry => entry.id === id))
   selectedSchemes.value = selectedSchemes.value.filter(id => schemes.value.some(entry => entry.id === id))
   cloudConfigured.value = result[5].configured
+  cloudModel.value = result[5].model
 }
 async function action(work: () => Promise<unknown>, success = '已保存') {
   error.value = ''; notice.value = ''; busy.value = true
@@ -261,7 +256,6 @@ async function revealPassword() {
   finally { busy.value = false }
 }
 async function saveCompany() { await action(async () => { await api(company.id ? `/ledgers/${company.id}` : '/ledgers', ledgerSchema, json(company.id ? 'PATCH' : 'POST', { name: company.name })); closeEditor() }) }
-async function saveCloud() { cloudTestMessage.value = ''; await action(async () => { await api('/settings/cloud', z.object({ configured: z.boolean() }), json('PUT', { api_key: cloudKey.value })); closeEditor() }) }
 async function testCloud() {
   cloudTesting.value = true; busy.value = true; cloudTestMessage.value = ''; error.value = ''; notice.value = ''
   try {
@@ -308,12 +302,6 @@ async function testCloud() {
         <label>台账名称<input v-model="company.name" maxlength="31" required></label><p class="muted">导出时用作 Excel 工作表名，不增加业务字段。</p>
         <div class="button-row"><button class="primary">{{ company.id ? '保存修改' : '创建台账' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
-      <form v-else-if="editor.kind === 'cloud'" @submit.prevent="saveCloud"><fieldset :disabled="busy">
-        <p class="muted">{{ cloudConfigured ? '输入新密钥替换现有配置，原密钥不回显。' : '配置后可使用云端辅助识别，本地识别可以独立使用。' }}</p>
-        <label>API 密钥<input v-model="cloudKey" type="password" autocomplete="off" required></label>
-        <p class="muted">保存后返回列表测试连接。</p>
-        <div class="button-row"><button class="primary" :disabled="!cloudKey">{{ cloudConfigured ? '保存更新' : '保存配置' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
-      </fieldset></form>
     </section>
     <section v-else-if="tab === 'materials'" class="admin-card">
       <div class="module-heading"><h2>共享物料</h2><button class="primary" :disabled="busy" @click="openMaterial()">新增物料</button></div>
@@ -348,7 +336,7 @@ async function testCloud() {
       <div class="table-actions catalog-selection"><span role="status">合计 {{ ledgers.length }} 条 · 筛选 {{ filteredLedgers.length }} 条</span></div>
       <div class="maintenance-list"><div class="table-scroll"><table class="ledger-table catalog-table compact-catalog"><thead><tr><th>台账名称</th><th>操作</th></tr></thead><tbody><tr v-for="entry in filteredLedgers" :key="entry.id" :data-catalog-row="`company-${entry.id}`" class="maintenance-row"><td class="catalog-name">{{ entry.name }}</td><td class="catalog-actions"><button class="maintenance-edit" :disabled="busy" @click="openCompany(entry)">修改</button><button class="maintenance-delete" :disabled="busy" @click="deleteCompany(entry)">删除</button></td></tr></tbody></table></div><p v-if="!filteredLedgers.length" class="module-empty">{{ ledgers.length ? '没有匹配的记录，请调整或清空筛选。' : '暂无记录，点击右上方按钮新增。' }}</p></div>
     </section>
-    <div v-else class="admin-columns settings-columns"><section class="admin-card"><div class="module-heading"><h2>智谱云端辅助</h2></div><p>模型：GLM-4.1V-Thinking-Flash</p><p class="muted">{{ cloudConfigured ? '已配置密钥，可测试连接或更新密钥。' : '尚未配置密钥，本地识别可以独立使用。' }}</p><div class="button-row"><button class="primary" :disabled="busy" @click="openCloud">{{ cloudConfigured ? '更新密钥' : '配置密钥' }}</button><button :disabled="busy || !cloudConfigured" @click="testCloud">{{ cloudTesting ? '测试中…' : '测试连接' }}</button><button :disabled="busy || !cloudConfigured" @click="cloudKey = ''; saveCloud()">清除密钥</button></div><p v-if="cloudTestMessage" :role="cloudTestOk ? 'status' : 'alert'" :class="cloudTestOk ? 'success' : 'error'">{{ cloudTestMessage }}</p></section><section class="admin-card"><div class="module-heading"><h2>个人导出模板</h2></div><p>请从顶部“我的模板”选择本机 Word 或 Excel 模板文件，普通用户也可设置。</p><p class="muted">在 Word/WPS 中修改本地模板的签名图片并保存。导出时优先使用已修改的本地模板，不覆盖服务器默认模板。</p></section></div>
+    <div v-else class="admin-columns settings-columns"><section class="admin-card"><div class="module-heading"><h2>DeepSeek 云端辅助</h2></div><p>模型：{{ cloudModel }}</p><p class="muted">{{ cloudConfigured ? '已读取模型网关配置，可测试连接。' : '尚未配置模型网关，请联系服务管理员。基础识别可以独立使用。' }}</p><p class="muted">与基础 OCR 共用服务端的模型网关配置，密钥保存在项目目录之外，不在网页显示。</p><p>默认关闭思考；录入人员可在识别按钮旁选择“低强度思考”。辅助不可用时保留基础识别结果。</p><div class="button-row"><button class="primary" :disabled="busy || !cloudConfigured" @click="testCloud">{{ cloudTesting ? '测试中…' : '测试连接' }}</button></div><p v-if="cloudTestMessage" :role="cloudTestOk ? 'status' : 'alert'" :class="cloudTestOk ? 'success' : 'error'">{{ cloudTestMessage }}</p></section><section class="admin-card"><div class="module-heading"><h2>个人导出模板</h2></div><p>请从顶部“我的模板”选择本机 Word 或 Excel 模板文件，普通用户也可设置。</p><p class="muted">在 Word/WPS 中修改本地模板的签名图片并保存。导出时优先使用已修改的本地模板，不覆盖服务器默认模板。</p></section></div>
   </main>
 </template>
 <style scoped>

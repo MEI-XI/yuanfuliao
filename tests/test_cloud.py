@@ -2,7 +2,9 @@ import httpx
 import pytest
 import time
 import json
+import os
 from io import BytesIO
+from pathlib import Path
 from PIL import Image
 
 from conftest import bootstrap
@@ -13,7 +15,6 @@ from test_recognition import run_label
 @pytest.mark.parametrize('expiry', ['', '2026-99-99'])
 def test_bad_or_empty_cloud_date_keeps_other_valid_fields(client, monkeypatch, expiry):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({
@@ -32,7 +33,6 @@ def test_bad_or_empty_cloud_date_keeps_other_valid_fields(client, monkeypatch, e
 
 def test_cloud_report_fields_and_uncertain_candidates_survive_response(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     content = {'packaging': '纸塑袋', 'batch_number': 'A260114', 'basis': 'GB25542',
                'received_quantity': '10袋', 'sensory': '白色粉末',
@@ -57,7 +57,6 @@ def test_cloud_report_fields_and_uncertain_candidates_survive_response(client, m
 ])
 def test_cloud_json_with_explanation_and_repeated_answers(client, monkeypatch, answer, expected_name, names):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': answer}}]})), **kwargs))
@@ -74,8 +73,7 @@ def test_cloud_json_with_explanation_and_repeated_answers(client, monkeypatch, a
 
 def test_cloud_connection_reports_rejected_credentials_without_echoing_key(client, monkeypatch):
     bootstrap(client)
-    key = 'test-key-never-echo'
-    client.put('/api/settings/cloud', json={'api_key': key})
+    key = 'test-only-gateway-key'
     real_client = httpx.Client
     def reject(request):
         assert request.headers['authorization'] == 'Bearer ' + key
@@ -85,7 +83,7 @@ def test_cloud_connection_reports_rejected_credentials_without_echoing_key(clien
     assert response.status_code == 200
     assert response.json()['ok'] is False
     assert '401' in response.json()['message']
-    assert '完整' in response.json()['message']
+    assert '本机加密密钥配置' in response.json()['message']
     assert key not in response.text
     client.post('/api/users', json={'username': 'ordinary', 'password': 'ordinary-password', 'role': 'user'})
     client.post('/api/login', json={'username': 'ordinary', 'password': 'ordinary-password'})
@@ -95,7 +93,6 @@ def test_cloud_connection_reports_rejected_credentials_without_echoing_key(clien
 def test_cloud_auth_failure_keeps_local_results_and_explains_how_to_fix(client, monkeypatch):
     bootstrap(client)
     ledger = new_ledger(client)
-    client.put('/api/settings/cloud', json={'api_key': 'rejected-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(
         transport=httpx.MockTransport(lambda request: httpx.Response(401)), **kwargs))
@@ -119,7 +116,6 @@ def test_cloud_auth_failure_keeps_local_results_and_explains_how_to_fix(client, 
 @pytest.mark.parametrize('failure, expected', [('timeout', '超时'), (429, '429'), (403, '403'), (500, '500')])
 def test_cloud_test_reports_provider_and_network_failures(client, monkeypatch, failure, expected):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     def fail(request):
         if failure == 'timeout':
@@ -132,15 +128,24 @@ def test_cloud_test_reports_provider_and_network_failures(client, monkeypatch, f
     assert 'private provider details' not in result['message']
 
 
-def test_cloud_test_validates_saved_key_and_model_response(client, monkeypatch):
+def test_cloud_test_validates_external_gateway_config_and_model_response(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': ''})
+    path = Path(os.environ['OCR_GATEWAY_CONFIG'])
+    saved = path.read_bytes()
+    path.unlink()
+    assert client.get('/api/settings/cloud').json()['configured'] is False
     assert '尚未配置' in client.post('/api/settings/cloud/test').json()['message']
-    client.put('/api/settings/cloud', json={'api_key': 'working-test-key'})
+    path.write_bytes(saved)
+    status = client.get('/api/settings/cloud').json()
+    assert status['configured'] is True
+    assert status['model'] == 'deepseek-flash'
+    assert 'api_key' not in status
+    assert 'protected_key' not in status
     real_client = httpx.Client
     def respond(request):
-        assert request.headers['authorization'] == 'Bearer working-test-key'
-        assert b'glm-4.1v-thinking-flash' in request.content
+        assert request.headers['authorization'] == 'Bearer test-only-gateway-key'
+        assert str(request.url) == 'http://ocr-gateway.test/v1/chat/completions'
+        assert b'deepseek-flash' in request.content
         return httpx.Response(200, json={'choices': [{'message': {'content': '{"material_name":"测试物料"}'}}]})
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs))
     assert client.post('/api/settings/cloud/test').json()['ok'] is True
@@ -148,7 +153,6 @@ def test_cloud_test_validates_saved_key_and_model_response(client, monkeypatch):
 
 def test_cloud_test_distinguishes_unusable_model_output_from_auth_failure(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': '不是 JSON'}}]})), **kwargs))

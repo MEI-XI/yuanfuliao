@@ -140,7 +140,6 @@ def test_local_ocr_normalizes_years_and_does_not_conflict_with_equivalent_months
 def test_cloud_result_normalizes_explicit_years_to_months(client, monkeypatch):
     bootstrap(client)
     ledger = new_ledger(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     cloud_fields = {'production_dates': ['2026-01-14'], 'shelf_life': '2年'}
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(

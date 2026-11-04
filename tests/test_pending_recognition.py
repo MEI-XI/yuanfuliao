@@ -21,7 +21,7 @@ def start_blocked_recognition(client, ledger, stage, release, *, fail=False):
         return {'texts': ['品名：甘氨酸'], 'boxes': []} if stage == 'local' else {'material_name': '甘氨酸'}
 
     client.app.state.scan_image = blocked_result if stage == 'local' else lambda path: {'texts': ['品名：甘氨酸'], 'boxes': []}
-    client.app.state.cloud_extract = blocked_result if stage == 'cloud' else lambda paths, texts: {'material_name': '甘氨酸'}
+    client.app.state.cloud_extract = blocked_result if stage == 'cloud' else lambda paths, texts, thinking_mode='disabled': {'material_name': '甘氨酸'}
     image = client.post(f'/api/ledgers/{ledger}/images', files={
         'file': ('label.png', (Path(__file__).parent / 'fixtures/label.png').read_bytes(), 'image/png'),
     }).json()

@@ -100,6 +100,7 @@ function toggleGroupSelection(key: number) {
   selectedGroupKeys.value = selectedGroupKeys.value.includes(key) ? selectedGroupKeys.value.filter(value => value !== key) : [...selectedGroupKeys.value, key]
 }
 const cloudEnabled = ref(true)
+const cloudThinking = ref<'disabled' | 'low'>('disabled')
 const selectedImage = ref(0)
 const angle = ref(0)
 const showLarge = ref(false)
@@ -752,7 +753,7 @@ async function recognizeGroup(current: DraftGroup) {
   const generation = ++current.generation
   current.pollError = ''; current.requestState = 'submitting'
   try {
-    const result = current.job && jobActive(current.job) ? current.job : await api(`/ledgers/${ledger.value.id}/recognition`, jobSchema, { ...json('POST', { image_ids: current.images, cloud_enabled: cloudEnabled.value }), signal: AbortSignal.timeout(15000) })
+    const result = current.job && jobActive(current.job) ? current.job : await api(`/ledgers/${ledger.value.id}/recognition`, jobSchema, { ...json('POST', { image_ids: current.images, cloud_enabled: cloudEnabled.value, cloud_thinking: cloudThinking.value }), signal: AbortSignal.timeout(15000) })
     if (current.generation !== generation) return
     current.job = result; current.jobId = result.id
     await monitorJob(current, result.id, generation, true)
@@ -887,12 +888,12 @@ async function download(kind: 'xlsx' | 'docx') {
     <main v-else class="editor-page">
       <nav class="breadcrumb"><button @click="leaveEditor">{{ editorReturn === 'recycle' ? '回收站' : ledger?.name + '台账' }}</button><span>/</span><span>{{ editing ? '查看与核对' : '新增查验记录' }}</span></nav>
       <div class="editor-heading"><div><h1>{{ editing ? fields.material_name || '查验记录' : '图片识别与核对' }}</h1><p class="muted">对照原图核对，未获取的信息可以手动填写或留空。</p></div><div v-if="editing" class="record-meta"><span class="status" :class="editing.status">{{ statusText[editing.status] }}</span><small>创建人：{{ people.find(p => p.id === editing?.creator_id)?.username }}<br>核对人：{{ people.find(p => p.id === editing?.checker_id)?.username || '未核对' }}</small><button @click="showHistory">查看修改历史</button><button v-if="administrator && editing.status !== 'void'" class="danger-button" :disabled="busy" @click="voidRecord()">作废记录</button></div></div>
-      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" :disabled="busy || !!batchRetry" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing || busy || !!batchRetry" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox" :disabled="recognizing">云端辅助</label><small>启用后会将照片发送给智谱；不可用时保留基础识别结果</small>
+      <section v-if="editable" class="upload-toolbar"><div class="mode-switch"><button :class="{ active: mode === 'same' }" :disabled="busy || !!batchRetry" @click="mode = 'same'">同一物料多图</button><button :class="{ active: mode === 'batch' }" :disabled="!!editing || busy || !!batchRetry" @click="mode = 'batch'">多种物料批量</button></div><label class="checkbox-label"><input v-model="cloudEnabled" type="checkbox" :disabled="recognizing">云端辅助</label><select v-model="cloudThinking" class="auxiliary-mode" aria-label="辅助思考模式" :disabled="recognizing || !cloudEnabled"><option value="disabled">关闭思考（快速）</option><option value="low">低强度思考</option></select><small>DeepSeek 辅助：通过模型网关处理照片；{{ cloudThinking === 'low' ? '低强度思考用时较长，可先填写或保存。' : '' }}不可用时保留基础识别结果</small>
         <section class="recognition-controls" aria-label="识别操作与进度">
           <button class="primary" :disabled="busy || !!batchRetry || recognizing || !groups.some(g => g.images.length)" @click="startRecognition">{{ recognizing ? '识别处理中…' : interrupted ? '重试获取状态' : '开始识别' }}</button>
           <div v-if="recognitionLabel" class="recognition-progress" :class="{ working: recognizing, failed: group?.requestState === 'error' || group?.job?.local_status === 'failed' }" role="status" aria-live="polite">
             <strong><span v-if="recognizing" class="recognition-spinner" aria-hidden="true"></span>{{ recognitionLabel }}</strong>
-            <span v-if="group?.job">云端辅助：{{ { queued: '等待基础识别结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，基础识别结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
+            <span v-if="group?.job">{{ group.job.cloud_thinking === null ? '辅助识别（历史任务）' : `DeepSeek 辅助${group.job.cloud_status !== 'disabled' ? `（${group.job.cloud_thinking === 'low' ? '低强度思考' : '关闭思考'}）` : ''}` }}：{{ { queued: '等待基础识别结果', running: '处理中，可先填写或保存', done: '建议已返回', failed: '不可用，基础识别结果仍可使用', disabled: '未启用' }[group.job.cloud_status] }}</span>
             <span v-if="group?.job?.cloud_status === 'failed' && group.job.cloud_error" class="error">{{ group.job.cloud_error }}</span>
             <span v-if="recognizing">可继续人工填写，无需重复点击识别</span>
           </div>

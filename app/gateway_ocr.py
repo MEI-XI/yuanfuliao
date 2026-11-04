@@ -15,13 +15,73 @@ class GatewayRecognitionError(RuntimeError):
     pass
 
 
+def gateway_config_path():
+    default = Path(os.getenv('LOCALAPPDATA', str(Path.home() / '.config'))) / 'Yuanfuliao' / 'ocr-gateway.json'
+    return Path(os.getenv('OCR_GATEWAY_CONFIG', str(default)))
+
+
+def read_gateway_config(path):
+    config = json.loads(path.read_text(encoding='utf-8-sig'))
+    if not isinstance(config, dict) or any(not isinstance(config.get(key), str) or not config[key].strip()
+                                          for key in ('base_url', 'model', 'protected_key')):
+        raise ValueError('incomplete gateway configuration')
+    return config
+
+
+def decrypt_gateway_key(path):
+    # Windows DPAPI binds this ciphertext to the service user's account.
+    # Capture stdout privately; never log the command result or config.
+    command = "$c = Get-Content -LiteralPath $env:YFL_OCR_CONFIG -Raw | ConvertFrom-Json; $p = New-Object System.Management.Automation.PSCredential('gateway', (ConvertTo-SecureString $c.protected_key)); [Console]::Write($p.GetNetworkCredential().Password)"
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+                            env={**{key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}, 'YFL_OCR_CONFIG': str(path)}, capture_output=True,
+                            timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+    if result.returncode or not result.stdout:
+        raise ValueError('credential unavailable')
+    key = result.stdout.decode('utf-8').strip()
+    if not key:
+        raise ValueError('credential unavailable')
+    return key
+
+
+def load_gateway_config(path):
+    config = read_gateway_config(path)
+    return {**config, 'api_key': decrypt_gateway_key(path)}
+
+
 def configured_scanner():
     from app.recognition import LocalScanner
-    default = Path(os.getenv('LOCALAPPDATA', str(Path.home() / '.config'))) / 'Yuanfuliao' / 'ocr-gateway.json'
-    path = Path(os.getenv('OCR_GATEWAY_CONFIG', str(default)))
+    path = gateway_config_path()
     if not path.exists():
         return LocalScanner()
     return ConfiguredGatewayScanner(path)
+
+
+def auxiliary_status():
+    try:
+        read_gateway_config(gateway_config_path())
+        configured = True
+    except (OSError, ValueError, TypeError):
+        configured = False
+    return {'configured': configured, 'provider': 'DeepSeek', 'model': 'deepseek-flash', 'default_thinking': 'disabled'}
+
+
+def configured_auxiliary():
+    return ConfiguredGatewayAuxiliary(gateway_config_path())
+
+
+class ConfiguredGatewayAuxiliary:
+    def __init__(self, path):
+        self.path = path
+
+    def __call__(self, paths, texts, thinking_mode='disabled'):
+        from app.recognition import CloudRecognitionError, cloud_extract
+        try:
+            config = load_gateway_config(self.path)
+        except FileNotFoundError:
+            raise CloudRecognitionError('尚未配置 DeepSeek 辅助识别，请管理员配置模型网关的本机加密文件') from None
+        except Exception:
+            raise CloudRecognitionError('DeepSeek 辅助网关配置无法读取，请管理员检查运行服务的账号及本机加密配置') from None
+        return cloud_extract(paths, texts, config['api_key'], base_url=config['base_url'], thinking_mode=thinking_mode)
 
 
 class ConfiguredGatewayScanner:
@@ -30,17 +90,8 @@ class ConfiguredGatewayScanner:
 
     def __call__(self, image_path):
         try:
-            config = json.loads(self.path.read_text(encoding='utf-8-sig'))
-            # Windows DPAPI binds this ciphertext to the service user's account.
-            # Capture stdout privately; never log the command result or config.
-            command = "$c = Get-Content -LiteralPath $env:YFL_OCR_CONFIG -Raw | ConvertFrom-Json; $p = New-Object System.Management.Automation.PSCredential('gateway', (ConvertTo-SecureString $c.protected_key)); [Console]::Write($p.GetNetworkCredential().Password)"
-            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
-                                    env={**{key: value for key, value in os.environ.items() if key.upper() != 'PSMODULEPATH'}, 'YFL_OCR_CONFIG': str(self.path)}, capture_output=True,
-                                    timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
-            if result.returncode or not result.stdout:
-                raise ValueError('credential unavailable')
-            key = result.stdout.decode('utf-8').strip()
-            scanner = GatewayScanner(config['base_url'], config['model'], key)
+            config = load_gateway_config(self.path)
+            scanner = GatewayScanner(config['base_url'], config['model'], config['api_key'])
         except Exception:
             raise GatewayRecognitionError('OCR 网关配置无法读取，请检查运行服务的 Windows 账号及本机加密配置') from None
         return scanner(image_path)

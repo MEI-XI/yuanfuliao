@@ -28,7 +28,7 @@ try:
         async with original_lifespan(application):
             def scan(path):
                 return {"texts": ["产品名称：甘氨酸", "生产商：测试食品有限公司", "规格：25kg/袋", "生产日期：2026年01月14日"], "boxes": []}
-            def cloud(paths, texts):
+            def cloud(paths, texts, thinking_mode='disabled'):
                 time.sleep(1)
                 return {"material_name": "云端建议名称"}
             application.state.scan_image = scan

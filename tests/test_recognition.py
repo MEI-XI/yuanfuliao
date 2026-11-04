@@ -143,7 +143,6 @@ def test_multiple_printed_expiries_require_review_before_derivation(client):
 def test_cloud_recognition_fills_missing_expiry_information(client, monkeypatch, cloud_fields, expected_duration, expected_expiry):
     bootstrap(client)
     ledger = new_ledger(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(cloud_fields)}}]})
@@ -280,7 +279,7 @@ def test_cloud_failure_keeps_local_result_and_does_not_prevent_saving(client):
     # Replace only model inference / the external cloud boundary; parsing, tasks,
     # persistence, permissions and record saving all use their real implementations.
     client.app.state.scan_image = lambda path: {"texts": ["产品名称：甘氨酸", "生产日期：2026年01月14日", "规格：25kg/袋", "合格"], "boxes": []}
-    def unavailable(paths, texts):
+    def unavailable(paths, texts, thinking_mode='disabled'):
         raise TimeoutError("provider unavailable")
     client.app.state.cloud_extract = unavailable
     job = client.post(f"/api/ledgers/{ledger}/recognition", json={"image_ids": [image_id], "cloud_enabled": True}).json()

@@ -17,6 +17,7 @@ LABELS = {
     'address_source': '地址来源', 'contact_source': '联系方式来源', 'version': '记录版本',
     'from_date': '开始日期', 'to_date': '结束日期', 'request_id': '批量保存编号',
     'inspection_enabled': '检验状态', 'mark_checked': '标记已核对', 'file': '上传文件',
+    'cloud_thinking': '辅助思考模式',
 }
 
 

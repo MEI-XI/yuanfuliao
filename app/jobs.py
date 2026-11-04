@@ -35,9 +35,10 @@ def run_cloud(app, job_id, paths, evidence):
     with Session(app.state.engine) as session:
         job = session.get(RecognitionJob, job_id)
         job.cloud_status = "running"
+        thinking_mode = job.cloud_thinking or "disabled"
         session.commit()
     try:
-        fields = app.state.cloud_extract(paths, [e["texts"] for e in evidence])
+        fields = app.state.cloud_extract(paths, [e["texts"] for e in evidence], thinking_mode)
         with Session(app.state.engine) as session:
             job = session.get(RecognitionJob, job_id)
             job.cloud_fields, job.cloud_status = fields, "done"

@@ -27,7 +27,6 @@ def test_incomplete_values_remain_candidates_without_invented_units(client):
 
 def test_cloud_name_candidates_have_default_and_keep_alternatives(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps({
@@ -42,7 +41,6 @@ def test_cloud_name_candidates_have_default_and_keep_alternatives(client, monkey
 
 def test_cloud_incomplete_units_do_not_become_complete_defaults(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps({
@@ -58,7 +56,6 @@ def test_cloud_incomplete_units_do_not_become_complete_defaults(client, monkeypa
 
 def test_cloud_keeps_complete_default_alongside_incomplete_candidates(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-key'})
     real_client = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': json.dumps({
@@ -75,7 +72,7 @@ def test_cloud_keeps_complete_default_alongside_incomplete_candidates(client, mo
 
 def test_english_translation_can_default_name_while_retaining_original(client):
     bootstrap(client)
-    client.app.state.cloud_extract = lambda paths, texts: {'material_name': '甘氨酸'}
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode='disabled': {'material_name': '甘氨酸'}
     job = run_label(client, new_ledger(client), ['Product Name: Glycine', 'Net Weight: 25 kg'], cloud_enabled=True)
     assert job['english_detected']
     assert job['candidate_defaults']['material_name'] == '甘氨酸'

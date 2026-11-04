@@ -25,7 +25,7 @@ def test_single_name_candidate_exactly_matches_confirmed_spelling(client):
     bootstrap(client)
     ledger = new_ledger(client)
     checked = checked_record(client, ledger, '鸡蛋黄粉 制品')
-    client.app.state.cloud_extract = lambda paths, texts: {'_candidates': {'material_name': ['鸡蛋黄粉制品']}}
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode='disabled': {'_candidates': {'material_name': ['鸡蛋黄粉制品']}}
     job = run_label(client, ledger, ['保质期：12个月'], cloud_enabled=True)
     suggestion = job['review_suggestions']
     assert suggestion['match_status'] == 'matched'
@@ -38,7 +38,7 @@ def test_multiple_unresolved_candidates_do_not_reuse_only_known_history(client):
     bootstrap(client)
     ledger = new_ledger(client)
     checked_record(client, ledger, '鸡蛋黄粉')
-    client.app.state.cloud_extract = lambda paths, texts: {'_candidates': {'material_name': ['鸡蛋黄粉', '鸡蛋黄粉制品']}}
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode='disabled': {'_candidates': {'material_name': ['鸡蛋黄粉', '鸡蛋黄粉制品']}}
     job = run_label(client, ledger, ['保质期：12个月'], cloud_enabled=True)
     assert job['review_suggestions']['fields'] == {}
     assert job['review_suggestions']['inspection'] is None
@@ -48,7 +48,7 @@ def test_differing_local_and_cloud_names_do_not_reuse_only_known_history(client)
     bootstrap(client)
     ledger = new_ledger(client)
     checked_record(client, ledger, '鸡蛋黄粉')
-    client.app.state.cloud_extract = lambda paths, texts: {'material_name': '鸡蛋黄粉制品'}
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode='disabled': {'material_name': '鸡蛋黄粉制品'}
     job = run_label(client, ledger, ['品名：鸡蛋黄粉'], cloud_enabled=True)
     assert job['review_suggestions']['fields'] == {}
     assert job['review_suggestions']['inspection'] is None

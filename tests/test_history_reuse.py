@@ -97,6 +97,10 @@ def test_shared_ocr_title_for_different_models_does_not_establish_same_material(
     assert unknown_model['inspection'] is None
     known_model = run_label(client, ledger, ['品名：调味粉', '型号：A1'])['review_suggestions']
     assert known_model['fields']['material_name'] == '调味粉 A1'
-    client.app.state.cloud_extract = lambda paths, texts: {'material_name': '调味粉'}
-    model_with_generic_translation = run_label(client, ledger, ['品名：调味粉', '型号：A1'], cloud_enabled=True)['review_suggestions']
-    assert model_with_generic_translation['fields']['material_name'] == '调味粉 A1'
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode='disabled': {'material_name': '调味粉'}
+    model_with_generic_translation = run_label(client, ledger, ['品名：调味粉', '型号：A1'], cloud_enabled=True)
+    assert model_with_generic_translation['cloud_status'] == 'done'
+    # The existing candidate policy requires a single agreed name; a generic
+    # auxiliary translation alongside a specific model remains for human review.
+    assert model_with_generic_translation['conflicts']['material_name'] == ['调味粉 A1', '调味粉']
+    assert model_with_generic_translation['review_suggestions']['sources'] == []

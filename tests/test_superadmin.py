@@ -128,7 +128,8 @@ def test_audit_retains_actor_metadata_and_excludes_credentials(client):
     root = bootstrap(client)
     worker = client.post('/api/users', json={'username': 'worker', 'password': 'private-password'}).json()
     client.get(f'/api/users/{worker["id"]}/password')
-    client.put('/api/settings/cloud', json={'api_key': 'private-api-key'})
+    client.app.state.cloud_extract = lambda paths, texts, thinking_mode: {'material_name': '连接测试物料'}
+    client.post('/api/settings/cloud/test')
     client.post('/api/logout')
     client.post('/api/login', json={'username': 'worker', 'password': 'private-password'})
     assert client.get('/api/audit-logs').status_code == 403
@@ -138,11 +139,11 @@ def test_audit_retains_actor_metadata_and_excludes_credentials(client):
     result = client.get('/api/audit-logs?page_size=100')
     assert result.status_code == 200
     entries = result.json()['items']
-    assert {'登录', '退出登录', '查看密码', '创建账号', '删除账号', '更新云端设置'} <= {row['action'] for row in entries}
+    assert {'登录', '退出登录', '查看密码', '创建账号', '删除账号', '测试云端连接'} <= {row['action'] for row in entries}
     assert any(row['actor_username'] == 'worker' and row['actor_id'] == worker['id'] for row in entries)
     assert all(row['at'] and row['target'] and 200 <= row['status_code'] < 300 for row in entries)
     assert 'private-password' not in result.text
-    assert 'private-api-key' not in result.text
+    assert 'test-only-gateway-key' not in result.text
     assert 'test-password-123' not in result.text
     first = client.get('/api/audit-logs?page_size=2').json()
     second = client.get('/api/audit-logs?page=2&page_size=2').json()

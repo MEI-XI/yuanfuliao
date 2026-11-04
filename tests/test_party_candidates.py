@@ -58,7 +58,6 @@ def test_multiple_photos_and_crop_english_parties_are_not_lost(client):
 
 def test_cloud_keeps_all_role_candidates_and_normal_field_alternatives(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-only-key'})
     real_client = httpx.Client
     payload = {
         'company_name': '甲贸易公司', 'address': '上海市甲路1号',
@@ -77,7 +76,6 @@ def test_cloud_keeps_all_role_candidates_and_normal_field_alternatives(client, m
 
 def test_cloud_array_fields_are_kept_as_choices_instead_of_discarded(client, monkeypatch):
     bootstrap(client)
-    client.put('/api/settings/cloud', json={'api_key': 'test-only-key'})
     real_client = httpx.Client
     payload = {'company_name': ['甲公司', '乙公司'], 'address': ['甲路1号', '乙路2号']}
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(

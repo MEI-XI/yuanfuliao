@@ -144,6 +144,7 @@ class RecognitionJob(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     image_ids: Mapped[list] = mapped_column(JSON)
     cloud_enabled: Mapped[bool] = mapped_column(Boolean)
+    cloud_thinking: Mapped[str | None] = mapped_column(String(20), default="disabled")
     local_status: Mapped[str] = mapped_column(String(20), default="queued")
     cloud_status: Mapped[str] = mapped_column(String(20), default="disabled")
     fields: Mapped[dict] = mapped_column(JSON, default=dict)
