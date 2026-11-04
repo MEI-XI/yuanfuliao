@@ -4,6 +4,8 @@
 
 Windows 服务默认读取运行账号的 `%LOCALAPPDATA%\Yuanfuliao\ocr-gateway.json`，也可用 `OCR_GATEWAY_CONFIG` 指定项目外的配置文件。文件包含 `base_url`、`model`、`protected_key` 三项；`protected_key` 必须使用同一 Windows 账号通过 `ConvertFrom-SecureString` 生成的 DPAPI 密文，不能填明文。
 
+当前本机常驻服务已固定使用 `D:\YuanfuliaoConfig\ocr-gateway.json`，路径通过不提交 Git 的后台 `.env` 设置 `OCR_GATEWAY_CONFIG`。原 AppData 配置在检查进程中可见、在网站进程中不可见，因此不再依赖该目录。重启网站或电脑后继续读取固定配置，录入人员无需重复设置。部署到新服务器时也应明确指定服务账号可读取的项目外绝对路径，并通过实际网站的连接测试和图片识别验证。
+
 密钥不经过浏览器，不写入数据库、源码或识别证据。更换运行账号或迁移服务器时，需要在新账号下重新配置密钥。不要将真实配置复制进项目或提交到 Git。
 
 `model` 仍指定基础 OCR 模型；辅助模型固定为 `deepseek-flash`，不会改写配置文件中的基础模型。网关密钥需同时有权调用这两个模型。管理员在“管理与公共资料 → 云端与模板”查看配置状态并测试连接；该页面不再提供密钥输入、更新或清除入口。配置状态只说明配置文件存在且格式可用，实际认证和模型调用以连接测试为准。连接测试使用文字请求，图片效果仍需上传包装照片核对。
