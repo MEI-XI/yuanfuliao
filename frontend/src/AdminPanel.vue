@@ -44,8 +44,8 @@ const filteredSchemes = computed(() => schemes.value.filter(entry => {
   return matchesDates(entry, schemeDates) && (!schemeBinding.value || (schemeBinding.value === 'general' ? entry.material_id === null : entry.material_id !== null)) &&
     matchesSearch(schemeSearch.value, [entry.name, linked?.name || '', linked?.model || '', ...entry.items.flatMap(item => [item.name, item.standard])])
 }))
-const materialView = reactive({ page: 1, sort: 'id', descending: false })
-const schemeView = reactive({ page: 1, sort: 'id', descending: false })
+const materialView = reactive({ page: 1, sort: 'created_at', descending: true })
+const schemeView = reactive({ page: 1, sort: 'created_at', descending: true })
 type CatalogEntry = z.infer<typeof materialSchema> | z.infer<typeof schemeSchema>
 function sortValue(entry: CatalogEntry, field: string): string | number | null {
   if (field === 'items') return 'items' in entry ? entry.items.length : 0
