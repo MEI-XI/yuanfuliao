@@ -966,9 +966,10 @@ async function download(kind: 'xlsx' | 'docx') {
 
 <style scoped>
 .image-panel .panel-heading{justify-content:flex-start;gap:8px;flex-wrap:wrap}
-.group-selection-actions{display:flex;gap:6px;margin-left:4px}
+.group-selection-actions{display:flex;gap:6px;margin-left:auto}
 .group-selection-actions button{padding:5px 9px;min-height:34px;font-size:13px;white-space:nowrap}
 .image-panel .photo-toggle{margin-left:auto;padding:5px 0;min-height:34px;font-size:13px}
+.image-panel .group-selection-actions + .photo-toggle{margin-left:0}
 .save-recognition-note{flex-basis:100%;color:#94621a;font-size:12px}
 .ledger-pagination{padding:20px 24px}
 </style>
