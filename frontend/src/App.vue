@@ -88,6 +88,13 @@ const selectedGroupKeys = ref<number[]>([])
 const batchPendingKeys = ref<number[]>([])
 const selectedGroups = computed(() => groups.value.filter(entry => selectedGroupKeys.value.includes(entry.key)))
 const selectionSaving = computed(() => !editing.value && mode.value === 'batch' && (selectedGroups.value.length > 0 || !!batchRetry.value))
+function recognitionUnfinished(entry: DraftGroup) {
+  return entry.requestState === 'submitting' || (entry.job ? jobActive(entry.job) : entry.jobId !== null || entry.requestState === 'error')
+}
+const savingGroups = computed(() => selectionSaving.value ? selectedGroups.value : group.value ? [group.value] : [])
+const savingRecognitionPending = computed(() => savingGroups.value.some(recognitionUnfinished))
+const savingRecognitionSubmitting = computed(() => savingGroups.value.some(entry => entry.requestState === 'submitting'))
+watch(savingRecognitionPending, pending => { if (pending) markBatchChecked.value = false })
 function toggleGroupSelection(key: number) {
   if (busy.value || batchRetry.value) return
   selectedGroupKeys.value = selectedGroupKeys.value.includes(key) ? selectedGroupKeys.value.filter(value => value !== key) : [...selectedGroupKeys.value, key]
@@ -591,6 +598,8 @@ async function save(check: boolean) {
     const editorRecord = editing.value
     const savedGroup = group.value
     if (!savedGroup) return
+    if (savedGroup.requestState === 'submitting') throw new Error('正在提交识别任务，请稍后保存')
+    if (check && recognitionUnfinished(savedGroup)) throw new Error('识别尚未完成，请使用“保存记录”暂存为待核对')
     const savedRecord = editorRecord || savedGroup.savedRecord
     if (savedGroup.expiry.changed) await deriveExpiry(savedGroup)
     const body = { inspection_enabled: savedGroup.inspectionEnabled, fields: { ...savedGroup.fields, arrival_date: savedGroup.fields.arrival_date || null, expiry_date: savedGroup.fields.expiry_date || null }, report: { ...savedGroup.report, inspection_date: savedGroup.report.inspection_date || null }, items: savedGroup.items, image_ids: savedGroup.images, recognition_job_id: savedGroup.jobId }
@@ -627,6 +636,8 @@ async function saveBatch() {
   await perform(async () => {
     if (!batchRetry.value) {
       const savedGroups = selectedGroups.value
+      if (savedGroups.some(entry => entry.requestState === 'submitting')) throw new Error('正在提交识别任务，请稍后保存')
+      if (savedGroups.some(recognitionUnfinished)) markBatchChecked.value = false
       await Promise.all(savedGroups.filter(entry => entry.expiry.changed).map(entry => deriveExpiry(entry)))
       for (const entry of savedGroups) if (entry.savedRecord) {
         entry.savedRecord = await api(`/records/${entry.savedRecord.id}`, recordSchema, json('PATCH', {
@@ -887,7 +898,7 @@ async function download(kind: 'xlsx' | 'docx') {
           </div>
         </section>
       </section>
-      <p v-for="suggestion in groupingSuggestions" :key="suggestion" class="notice">{{ suggestion }}</p><div class="editor-grid"><aside class="image-panel"><div class="panel-heading"><h2>包装图片</h2><button class="text-button" @click="showPhoto = !showPhoto">{{ showPhoto ? '折叠图片' : '展开图片' }}</button></div><p aria-label="当前图片分组" class="muted">记录 {{ activeGroup + 1 }} · {{ group?.images.length || 0 }} 张</p>
+      <p v-for="suggestion in groupingSuggestions" :key="suggestion" class="notice">{{ suggestion }}</p><div class="editor-grid"><aside class="image-panel"><div class="panel-heading"><h2>包装图片</h2><div v-if="editable && !editing && mode === 'batch'" class="group-selection-actions"><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = groups.map(entry => entry.key)">全选分组</button><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = []">全部清空</button></div><button class="text-button photo-toggle" @click="showPhoto = !showPhoto">{{ showPhoto ? '折叠图片' : '展开图片' }}</button></div><p aria-label="当前图片分组" class="muted">记录 {{ activeGroup + 1 }} · {{ group?.images.length || 0 }} 张</p>
         <div v-if="editable" class="upload-drop" @dragover.prevent @drop.prevent="uploadFiles($event.dataTransfer?.files || null)"><label class="file-picker">选择照片 / 相册<input type="file" accept="image/jpeg,image/png,image/webp" multiple aria-label="选择包装照片" :disabled="busy || !!batchRetry" @change="fileChosen"></label><label class="file-picker camera-picker">拍照<input type="file" accept="image/*" capture="environment" aria-label="拍摄包装照片" :disabled="busy || !!batchRetry" @change="fileChosen"></label><small>支持拖入照片，每张最多 20MB</small></div>
         <div v-if="showPhoto" class="photo-workspace"><BatchGroups v-if="groups.length > 1 || (!editing && mode === 'batch')" :groups="groups" :active-index="activeGroup" :selected-image="selectedImage" :selected-keys="selectedGroupKeys" :selection-enabled="!editing && mode === 'batch'" :disabled="busy || !!batchRetry" @select="switchGroup" @preview="previewGroup" @merge="mergeGroups" @toggle-selection="toggleGroupSelection" @reorder="reorderGroups" /><div class="image-stage"><div v-if="selectedImage" class="photo-viewer"><img :src="`/api/images/${selectedImage}`" alt="当前包装原图" :style="{ transform: `rotate(${angle}deg)` }" @click="showLarge = true"></div><div v-else class="image-placeholder"><div class="picture-icon">▧</div><p>本条记录暂无图片</p><small>可以先手动填写并保存</small></div><div v-if="selectedImage" class="photo-actions"><button @click="angle += 90">旋转查看</button><button @click="showLarge = true">放大原图</button></div><div class="thumbnails"><div v-for="photo in group?.images || []" :key="photo" class="thumbnail"><button :class="{ active: selectedImage === photo }" @click="selectedImage = photo; angle = 0"><img :src="`/api/images/${photo}`" alt="包装图片缩略图"></button><template v-if="editable"><button class="text-button" @click="removeImage(photo)">移除</button><button v-if="!editing && (group?.images.length || 0) > 1" class="text-button" @click="splitImage(photo)">拆成一组</button><select v-if="!editing && groups.length > 1" aria-label="移动图片到分组" :value="group?.key" @change="imageDestination($event, photo)"><option v-for="(entry, index) in groups" :key="entry.key" :value="entry.key">记录 {{ index + 1 }}</option></select></template></div></div></div></div>
         <div v-if="group?.job" class="recognition-result">
@@ -934,10 +945,10 @@ async function download(kind: 'xlsx' | 'docx') {
           <section v-if="group?.inspectionEnabled" class="form-section"><h2>报告信息</h2><div class="field-grid"><label>包装<input v-model="report.packaging" @input="markDirty('report.packaging')" aria-label="包装"><FieldSuggestions label="包装" :values="suggestionsFor('packaging')" :warnings="warningsFor('packaging')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('packaging', $event)" /></label><label>产品批号<input v-model="report.batch_number" aria-label="产品批号" @input="markDirty('report.batch_number')"><FieldSuggestions label="产品批号" :values="suggestionsFor('batch_number')" :warnings="warningsFor('batch_number')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('batch_number', $event)" /></label><label>检验依据<input v-model="report.basis" aria-label="检验依据" @input="markDirty('report.basis')"><FieldSuggestions label="检验依据" :values="suggestionsFor('basis')" :warnings="warningsFor('basis')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('basis', $event)" /><small>默认选用方案名称，可自行修改</small></label><label>检验日期<input v-model="report.inspection_date" type="date" aria-label="检验日期" @input="markDirty('report.inspection_date')"><FieldSuggestions label="检验日期" :values="suggestionsFor('inspection_date')" :warnings="warningsFor('inspection_date')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('inspection_date', $event)" /></label><label>是否提供内检报告<select v-model="report.internal_report" aria-label="是否提供内检报告" @change="markDirty('report.internal_report')"><option value="">留空</option><option>是</option><option>否</option></select><FieldSuggestions label="是否提供内检报告" :values="suggestionsFor('internal_report')" :warnings="warningsFor('internal_report')" :disabled="!editable || busy || !!batchRetry" @choose="applySuggestion('internal_report', $event)" /></label><label class="wide">结论<textarea v-model="report.conclusion" rows="2" @input="markDirty('report.conclusion')"></textarea></label></div><p class="muted">如需修改检验员和批准签名，请修改模板中的签名图片。<button type="button" class="text-button" @click="openTemplates">修改模板文件</button></p></section>
         </fieldset><ReportAttachments v-if="group" :key="group.key" :pending-files="group.pendingReports" @files-changed="group.pendingReports = $event" :record-id="editing?.id || group.savedRecord?.id || null" :record-version="editing?.version || group.savedRecord?.version || null" :editable="editable && !busy && (!batchRetry || !!group.savedRecord)" @record-changed="updateAttachmentRecord" /></div></div>
       <footer class="savebar save-bar">
-        <div class="save-summary"><span>{{ editable ? '业务字段允许留空' : '当前记录只读' }}</span><template v-if="editable && !editing && mode === 'batch'"><span>共 {{ groups.length }} 条，已选 {{ selectedGroups.length }} 条</span><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = groups.map(entry => entry.key)">全选分组</button><button :disabled="busy || !!batchRetry" @click="selectedGroupKeys = []">全部清空</button></template></div>
+        <div class="save-summary"><span>{{ editable ? '业务字段允许留空' : '当前记录只读' }}</span><span v-if="editable && !editing && mode === 'batch'">共 {{ groups.length }} 条，已选 {{ selectedGroups.length }} 条</span><small v-if="editable && savingRecognitionPending" class="save-recognition-note" role="status" aria-label="识别中保存提示">{{ savingRecognitionSubmitting ? '正在提交识别任务，提交后可暂存为待核对' : '识别尚未完成，可暂存为待核对；完成后再核对' }}</small></div>
         <div class="save-actions"><button :disabled="busy || !!batchRetry" @click="leaveEditor">{{ editorReturn === 'recycle' ? '返回回收站' : '返回台账' }}</button>
-          <template v-if="editable && selectionSaving"><label class="checkbox-label"><input v-model="markBatchChecked" type="checkbox" :disabled="busy || !!batchRetry">同时标记为已核对</label><button class="primary" :disabled="busy || recognizing" @click="saveBatch">{{ busy ? '正在保存…' : batchRetry ? '重试批量保存' : `保存所选 ${selectedGroups.length} 条记录` }}</button></template>
-          <template v-else-if="editable"><button :disabled="busy || !!batchRetry" @click="save(false)">保存记录</button><button class="primary" :disabled="busy || !!batchRetry" @click="save(true)">保存并标记已核对</button></template>
+          <template v-if="editable && selectionSaving"><label class="checkbox-label"><input v-model="markBatchChecked" type="checkbox" :disabled="busy || !!batchRetry || savingRecognitionPending">同时标记为已核对</label><button class="primary" :disabled="busy || savingRecognitionSubmitting" @click="saveBatch">{{ busy ? '正在保存…' : batchRetry ? '重试批量保存' : `保存所选 ${selectedGroups.length} 条记录` }}</button></template>
+          <template v-else-if="editable"><button :disabled="busy || !!batchRetry || savingRecognitionSubmitting" @click="save(false)">保存记录</button><button class="primary" :disabled="busy || !!batchRetry || savingRecognitionPending" @click="save(true)">保存并标记已核对</button></template>
         </div>
       </footer>
     </main>
@@ -954,5 +965,10 @@ async function download(kind: 'xlsx' | 'docx') {
 </template>
 
 <style scoped>
+.image-panel .panel-heading{justify-content:flex-start;gap:8px;flex-wrap:wrap}
+.group-selection-actions{display:flex;gap:6px;margin-left:4px}
+.group-selection-actions button{padding:5px 9px;min-height:34px;font-size:13px;white-space:nowrap}
+.image-panel .photo-toggle{margin-left:auto;padding:5px 0;min-height:34px;font-size:13px}
+.save-recognition-note{flex-basis:100%;color:#94621a;font-size:12px}
 .ledger-pagination{padding:20px 24px}
 </style>

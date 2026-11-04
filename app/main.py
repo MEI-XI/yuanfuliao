@@ -342,6 +342,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         saved = [create_record(ledger_id, draft, user, session) for draft in body.records]
         if body.mark_checked:
             for item in saved:
+                require_recognition_finished(item, session)
                 item.status, item.checker_id, item.checked_at = 'checked', user.id, utcnow()
                 item.version += 1
                 item.updated_at = item.checked_at
@@ -433,6 +434,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.post("/api/records/{record_id}/check")
     def check_record(record_id: int, body: VersionInput, user: User = Depends(current_user), session: Session = Depends(db)):
         item = editable_record(record_id, body.version, user, session)
+        require_recognition_finished(item, session)
         item.status, item.checker_id, item.checked_at = "checked", user.id, utcnow()
         append_history(item, user, "checked", session)
         session.commit()
@@ -719,6 +721,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
         job = session.get(RecognitionJob, job_id)
         if not job or job.ledger_id != ledger_id or set(job.image_ids) != set(image_ids):
             raise HTTPException(422, '识别任务与本条记录图片不匹配')
+
+    def require_recognition_finished(record, session):
+        job = session.get(RecognitionJob, record.recognition_job_id) if record.recognition_job_id else None
+        if job and (job.local_status in {'queued', 'running'} or job.cloud_status in {'queued', 'running'}):
+            raise HTTPException(409, '识别尚未完成，只能保存为待核对。请取消“同时标记为已核对”，识别结束后再核对。')
 
     @app.post("/api/ledgers/{ledger_id}/recognition", status_code=202)
     def recognize(ledger_id: int, body: RecognitionInput, user: User = Depends(current_user), session: Session = Depends(db)):
