@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { z } from 'zod'
 import { api } from './api'
+import AutoGrowTextarea from './AutoGrowTextarea.vue'
 
 const props = defineProps<{ modelValue: string; kind: 'result' | 'conclusion' }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -24,10 +25,9 @@ function request(method = 'GET', name = '') {
   return requests
 }
 function outside(event: PointerEvent) { if (event.target instanceof Node && !root.value?.contains(event.target)) open.value = false }
-function edit(event: Event) {
-  if (!(event.target instanceof HTMLInputElement)) return
-  emit('update:modelValue', event.target.value)
-  typed.value = event.target.value.trim()
+function edit(value: string) {
+  emit('update:modelValue', value)
+  typed.value = value.trim()
   open.value = true
 }
 function remember() {
@@ -50,8 +50,8 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
   <div ref="root" class="inspection-choice" @keydown.esc.stop.prevent="open = false" @focusout="focusOut">
     <label><span class="inspection-field-label">{{ label }}</span>
       <span class="choice-input">
-      <input :value="modelValue" :aria-label="label" role="combobox" :aria-expanded="open" aria-autocomplete="none" placeholder="选择或输入"
-        @focus="open = true; request()" @click="open = true" @input="edit" @blur="remember" @keydown.down.prevent="open = true">
+      <AutoGrowTextarea :model-value="modelValue" :aria-label="label" role="combobox" :aria-expanded="open" aria-autocomplete="none" placeholder="选择或输入"
+        @focus="open = true; request()" @click="open = true" @update:model-value="edit" @blur="remember" @keydown.down="open = true" />
       <span class="choice-arrow" aria-hidden="true">▾</span>
       </span>
     </label>
@@ -71,12 +71,12 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
 <style scoped>
 .inspection-choice { position: relative; min-width: 0; }
 .choice-input { position: relative; display: block; }
-.choice-input input { padding-right: 24px; }
+.choice-input textarea { padding-right: 24px; }
 .choice-arrow { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #687f8a; }
 .choice-menu { position: absolute; z-index: 22; top: 100%; left: 0; min-width: 100%; width: max-content; max-width: min(280px, 70vw); padding: 6px; background: white; border: 1px solid #b9cfcc; border-radius: 6px; box-shadow: 0 8px 24px #163c3826; }
 [role=listbox] { max-height: 200px; overflow: auto; }
 .choice-row { display: flex; align-items: center; }
-.choice-row button { border: 0; text-align: left; overflow-wrap: anywhere; }
+.choice-row button { border: 0; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 [role=option] { flex: 1; min-width: 0; }
 [aria-selected=true] { background: #e5f5f2; color: #087f8c; }
 .remove-choice { flex-shrink: 0; width: 32px; padding: 4px; text-align: center !important; color: #6b7e7b; font-size: 20px; }

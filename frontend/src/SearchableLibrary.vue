@@ -34,7 +34,10 @@ function choose(value: string) { emit('update:value', value); emit('change', val
 
 <style>
 .library-select-dropdown{max-width:calc(100vw - 24px)}
-.library-select-dropdown .el-select-dropdown__item{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.searchable-library .el-select__selection{display:grid;gap:0}
+.searchable-library .el-select__input-wrapper,.searchable-library .el-select__placeholder{grid-area:1 / 1;min-width:0}
+.searchable-library .el-select__placeholder{position:static;transform:none;white-space:pre-wrap;overflow-wrap:anywhere;line-height:24px}
+.library-select-dropdown .el-select-dropdown__item{max-width:100%;height:auto;min-height:34px;padding-top:6px;padding-bottom:6px;line-height:22px;white-space:pre-wrap;overflow-wrap:anywhere}
 .library-select-dropdown .el-select-dropdown__wrap{max-height:220px}
 .library-select-dropdown .el-select-dropdown{min-width:0!important}
 </style>

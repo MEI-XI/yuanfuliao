@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { z } from 'zod'
 import { api } from './api'
+import AutoGrowTextarea from './AutoGrowTextarea.vue'
 
 const props = defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -45,11 +46,9 @@ function toggle(name: string) {
   const values = selected.value.includes(name) ? selected.value.filter(value => value !== name) : [...selected.value, name]
   emit('update:modelValue', values.join('、'))
 }
-function edit(event: Event) {
-  if (event.target instanceof HTMLInputElement) {
-    emit('update:modelValue', event.target.value)
-    typedNames.value = event.target.value.split(/[、,，;；\n]+/).map(value => value.trim()).filter(Boolean)
-  }
+function edit(value: string) {
+  emit('update:modelValue', value)
+  typedNames.value = value.split(/[、,，;；\n]+/).map(value => value.trim()).filter(Boolean)
 }
 async function load() {
   try { history.value = await api('/certificate-options', z.array(z.string())); error.value = '' }
@@ -65,7 +64,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
     <details ref="dropdown" @keydown.esc.stop.prevent="close">
     <summary>{{ selected.length ? selected.join('、') : '请选择随车证件（可多选）' }}<span aria-hidden="true">▾</span></summary>
     <div class="certificate-menu">
-    <label>输入或修改证件<input :value="modelValue" aria-label="随车证件" placeholder="多个证件用顿号分隔" @input="edit" @change="addHistory"></label>
+    <label>输入或修改证件<AutoGrowTextarea :model-value="modelValue" aria-label="随车证件" placeholder="多个证件用顿号分隔" @update:model-value="edit" @change="addHistory" /></label>
     <small>勾选下方选项，或直接输入文字；结束输入后自动记住。</small>
     <div class="certificate-choices" role="group" aria-label="常用及历史随车证件">
       <div v-for="name in choices" :key="name" class="certificate-option" :class="{ selected: selected.includes(name) }">
