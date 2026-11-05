@@ -56,7 +56,7 @@ test('管理方案可搜索绑定物料，长选项限制宽度并提供完整�
   expect(optionBox!.width).toBeLessThanOrEqual(controlBox!.width + 2)
   await option.click()
   await page.getByLabel('方案名称', { exact: true }).fill(`搜索绑定方案${material.id}`)
-  await page.getByRole('button', { name: '创建检验方案', exact: true }).click()
+  await page.getByRole('button', { name: '保存方案', exact: true }).click()
   await expect(page.getByRole('region', { name: '新增检验方案', exact: true })).not.toBeVisible()
   const schemes = await (await page.request.get('/api/schemes')).json()
   expect(schemes.find((entry: { name: string }) => entry.name === `搜索绑定方案${material.id}`).material_id).toBe(material.id)

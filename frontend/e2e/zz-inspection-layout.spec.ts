@@ -2,6 +2,7 @@ import { expect, test, type Locator } from '@playwright/test'
 
 const sensory = '呈均匀的白色或类白色粉末，无异味；无肉眼可见外来杂质，无受潮、结块现象。'
 const packaging = '内外包装完整、清洁，无破损、渗漏及污染；标签应清晰标注产品名称、规格、生产厂家、生产日期及保质期。'
+const packagingName = '包装完整性、清洁程度及产品标签标识检查'
 
 async function expectFullText(control: Locator) {
   await expect.poll(() => control.evaluate(element => ({
@@ -24,7 +25,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   const ledger = await (await page.request.post('/api/ledgers', { data: { name: `排版测试${Date.now()}` } })).json()
   const scheme = await (await page.request.post('/api/schemes', { data: {
     name: `原辅料通用检验方案（示例）${Date.now()}`,
-    items: [{ name: '感官', standard: sensory }, { name: '包装与标识', standard: packaging }, { name: '水分', standard: '≤ 0.5%' }],
+    items: [{ name: '感官', standard: sensory }, { name: packagingName, standard: packaging }, { name: '水分', standard: '≤ 0.5%' }],
   } })).json()
   await page.reload()
   await page.getByRole('button', { name: `进入${ledger.name}`, exact: true }).click()
@@ -40,6 +41,8 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   const standards = page.getByRole('textbox', { name: '标准规定', exact: true })
   await expect(standards).toHaveCount(3)
   await expectFullText(standards.nth(1))
+  const itemName = page.getByLabel('项目', { exact: true }).nth(1)
+  await expectFullText(itemName)
   const standardWidth = (await standards.first().boundingBox())!.width
   expect(standardWidth).toBeGreaterThan((await page.getByLabel('项目', { exact: true }).first().boundingBox())!.width)
   for (let index = 0; index < 3; index++) {
@@ -56,6 +59,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await expectFullText(standards.nth(1))
   expect((await standards.nth(1).boundingBox())!.height).toBeGreaterThan(initialHeight)
   await page.setViewportSize({ width: 390, height: 844 })
+  await expectFullText(itemName)
   await expectFullText(standards.nth(1))
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await standards.nth(1).evaluate(element => {
@@ -66,6 +70,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await page.getByRole('button', { name: '保存记录', exact: true }).click()
   await page.getByRole('button', { name: '核对 / 编辑', exact: true }).click()
   await expect(standards.nth(1)).toHaveValue(extended)
+  await expect(itemName).toHaveValue(packagingName)
   await expectFullText(standards.nth(1))
   await standards.nth(1).fill('≤ 0.5%')
   await expectFullText(standards.nth(1))

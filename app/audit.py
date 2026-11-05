@@ -55,7 +55,7 @@ def register_audit(app, engine, db, current_user):
             details = {'method': request.method, 'route': getattr(route, 'path', '')}
             details.update(getattr(request.state, 'audit_details', {}))
             with Session(engine) as session:
-                action = ACTIONS.get(name, '执行操作')
+                action = getattr(request.state, 'audit_action', ACTIONS.get(name, '执行操作'))
                 subject = previous_subject or describe_subject(session, request.url.path, details)
                 details['description'] = describe_operation(action, subject)
                 session.add(AuditLog(actor_id=actor[0], actor_username=actor[1],

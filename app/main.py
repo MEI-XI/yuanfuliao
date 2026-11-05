@@ -517,29 +517,45 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return [{"id": s.id, "material_id": s.material_id, "name": s.name, "items": s.items, "created_at": s.created_at, "updated_at": s.updated_at} for s in session.scalars(query)]
 
     def save_scheme(body, session, scheme_id=None):
-        unique_catalog_name(session, Scheme, body.name, scheme_id)
+        session.execute(text('SELECT pg_advisory_xact_lock(hashtext(:key))'), {'key': 'catalog-name:schemes'})
+        original = session.get(Scheme, scheme_id) if scheme_id else None
+        if scheme_id and original is None:
+            raise HTTPException(404, "方案不存在")
+        existing = next((entry for entry in session.scalars(select(Scheme))
+                         if entry.name.strip().casefold() == body.name.strip().casefold()), None)
         if body.material_id is not None and not session.get(Material, body.material_id):
             raise HTTPException(422, "物料不存在")
-        item = session.get(Scheme, scheme_id) if scheme_id else Scheme()
-        if not item:
-            raise HTTPException(404, "方案不存在")
-        item.material_id, item.name, item.items = body.material_id, body.name, [i.model_dump() for i in body.items]
+        items = [entry.model_dump() for entry in body.items]
+        if existing:
+            existing_items = [{key: entry.get(key, '').strip() for key in ('name', 'standard', 'unit')}
+                              for entry in existing.items]
+            if existing.material_id == body.material_id and existing_items == items:
+                raise HTTPException(409, '已经有同样的检验标准方案，内容完全一致，无需重复保存')
+        item = existing or original or Scheme()
+        is_new = item.id is None
+        save_action = 'created' if is_new else 'replaced' if existing and existing.id != scheme_id else 'updated'
+        item.material_id, item.name, item.items = body.material_id, body.name, items
         item.updated_at = utcnow()
-        if not scheme_id:
+        if is_new:
             item.created_at = item.updated_at
         session.add(item)
         session.commit()
-        return {"id": item.id, **body.model_dump(), "created_at": item.created_at, "updated_at": item.updated_at}
+        return {"id": item.id, **body.model_dump(), "created_at": item.created_at, "updated_at": item.updated_at, "save_action": save_action}
 
     @app.post("/api/schemes", status_code=201)
-    def add_scheme(body: SchemeInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+    def add_scheme(body: SchemeInput, request: Request, response: Response, user: User = Depends(administrator), session: Session = Depends(db)):
         result = save_scheme(body, session)
         request.state.audit_details = {'subject_path': f'/api/schemes/{result["id"]}'}
+        if result['save_action'] != 'created':
+            response.status_code = 200
+            request.state.audit_action = '修改检验方案'
         return result
 
     @app.put("/api/schemes/{scheme_id}")
-    def edit_scheme(scheme_id: int, body: SchemeInput, user: User = Depends(administrator), session: Session = Depends(db)):
-        return save_scheme(body, session, scheme_id)
+    def edit_scheme(scheme_id: int, body: SchemeInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+        result = save_scheme(body, session, scheme_id)
+        request.state.audit_details = {'subject_path': f'/api/schemes/{result["id"]}'}
+        return result
 
     @app.get("/api/partners")
     def partners(user: User = Depends(current_user), session: Session = Depends(db)):

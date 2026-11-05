@@ -4,7 +4,8 @@ import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
 import PaginationBar from './PaginationBar.vue'
 import SearchableLibrary from './SearchableLibrary.vue'
-import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
+import AutoGrowTextarea from './AutoGrowTextarea.vue'
+import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, schemeSaveSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
 const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
 const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
@@ -163,9 +164,9 @@ async function refresh() {
   cloudConfigured.value = result[5].configured
   cloudModel.value = result[5].model
 }
-async function action(work: () => Promise<unknown>, success = '已保存') {
+async function action(work: () => Promise<unknown>, success: string | (() => string) = '已保存') {
   error.value = ''; notice.value = ''; busy.value = true
-  try { await work(); await refresh(); notice.value = success; await restoreListPosition() } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' } finally { busy.value = false }
+  try { await work(); await refresh(); notice.value = typeof success === 'function' ? success() : success; await restoreListPosition() } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' } finally { busy.value = false }
 }
 async function deleteEntry(resource: 'materials' | 'schemes' | 'partners' | 'users', id: number, name: string, reset: () => void) {
   const message = `确定删除「${name}」吗？删除后不可恢复，已有查验记录会保留。`
@@ -230,7 +231,16 @@ async function deleteCompany(entry: Ledger) {
 }
 onMounted(() => action(refresh, ''))
 async function saveMaterial() { await action(async () => { const { id, ...body } = material; await api(id ? `/materials/${id}` : '/materials', materialSchema, json(id ? 'PUT' : 'POST', body)); closeEditor() }) }
-async function saveScheme() { await action(async () => { const { id, ...body } = scheme; await api(id ? `/schemes/${id}` : '/schemes', schemeSchema, json(id ? 'PUT' : 'POST', { ...body, items: body.items.map(item => ({ ...item, unit: '' })) })); closeEditor() }) }
+async function saveScheme() {
+  let message = '已保存'
+  await action(async () => {
+    const { id, ...body } = scheme
+    const saved = await api(id ? `/schemes/${id}` : '/schemes', schemeSaveSchema, json(id ? 'PUT' : 'POST', { ...body, items: body.items.map(item => ({ ...item, unit: '' })) }))
+    message = saved.save_action === 'replaced' ? '已替换同名检验标准方案' : '已保存'
+    if (returnPosition) returnPosition.id = saved.id
+    closeEditor()
+  }, () => message)
+}
 async function savePartner() { await action(async () => { const { id, ...body } = partner; await api(id ? `/partners/${id}` : '/partners', partnerSchema, json(id ? 'PUT' : 'POST', body)); closeEditor() }) }
 async function saveAccount() {
   busy.value = true; error.value = ''; notice.value = ''
@@ -279,10 +289,10 @@ async function testCloud() {
       </fieldset></form>
       <form v-else-if="editor.kind === 'scheme'" @submit.prevent="saveScheme"><fieldset :disabled="busy">
         <div class="field-grid"><SearchableLibrary label="方案所属物料" placeholder="输入物料名称、型号或别名" empty-label="不绑定物料（通用方案）" :disabled="busy" :value="scheme.material_id || ''" :options="materials.map(entry => ({ value: entry.id, label: [entry.name, entry.model].filter(Boolean).join(' '), search: entry.aliases }))" @update:value="scheme.material_id = Number($event) || null" /><label>方案名称<input v-model="scheme.name" required></label></div>
-        <p class="muted">所属物料可不选；所有方案都能用于不同物料，关联仅作提示。</p>
-        <div v-for="(item, index) in scheme.items" :key="index" class="standard-edit-row"><label>项目名称<input v-model="item.name"></label><label>标准规定<input v-model="item.standard"></label><button type="button" @click="scheme.items.splice(index, 1)">移除</button></div>
+        <p class="muted">所属物料可不选；所有方案都能用于不同物料。同名方案内容不同会直接替换，完全相同则提示已存在。</p>
+        <div v-for="(item, index) in scheme.items" :key="index" class="standard-edit-row"><label>项目名称<AutoGrowTextarea v-model="item.name" /></label><label>标准规定<input v-model="item.standard"></label><button type="button" @click="scheme.items.splice(index, 1)">移除</button></div>
         <button type="button" @click="scheme.items.push({ name: '', standard: '', unit: '' })">增加项目</button>
-        <div class="button-row"><button class="primary">{{ scheme.id ? '保存修改' : '创建检验方案' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
+        <div class="button-row"><button class="primary">{{ scheme.id ? '保存修改' : '保存方案' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'partner'" @submit.prevent="savePartner"><fieldset :disabled="busy">
         <div class="field-grid"><label>单位名称<input v-model="partner.name" required></label><label>单位类型<select v-model="partner.kind"><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label class="wide">地址<input v-model="partner.address"></label><label class="wide">联系方式<input v-model="partner.contact"></label></div>

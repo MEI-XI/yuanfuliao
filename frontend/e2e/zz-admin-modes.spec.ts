@@ -59,7 +59,7 @@ test('各小模块从自己的列表进入新增和修改页面，返回后丢�
       await create.getByLabel('项目名称').fill('外观')
       await create.getByLabel('标准规定', { exact: true }).fill('无异物')
     }
-    await create.getByRole('button', { name: `创建${entry.noun}`, exact: true }).click()
+    await create.getByRole('button', { name: entry.resource === 'schemes' ? '保存方案' : `创建${entry.noun}`, exact: true }).click()
     await expect(create).not.toBeVisible()
     const row = page.locator('.maintenance-row').filter({ hasText: entry.name })
     const searchLabels: Record<string, string> = { partners: '查找单位', users: '查找账号', ledgers: '查找台账' }
@@ -84,6 +84,7 @@ test('各小模块从自己的列表进入新增和修改页面，返回后丢�
     await expect(create.getByLabel(entry.label, { exact: true })).toHaveValue('')
     await create.getByRole('button', { name: '取消返回', exact: true }).click()
     await row.getByRole('button', { name: /修改/ }).click()
+    if (entry.resource === 'schemes') await edit.getByLabel('标准规定', { exact: true }).fill('清洁、无异物')
     await edit.getByRole('button', { name: '保存修改', exact: true }).click()
     await expect(edit).not.toBeVisible()
     await expect(row).toBeVisible()

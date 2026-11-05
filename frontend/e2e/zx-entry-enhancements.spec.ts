@@ -144,7 +144,7 @@ test('核对当前项目后另存标准方案，只保存项目与标准并保�
   await expect(dialog.getByLabel('标准规定', { exact: true })).toHaveValue('≥99%')
   await expect(dialog.getByLabel('检验结果', { exact: true })).toHaveCount(0)
   await dialog.getByLabel('方案名称', { exact: true }).fill(name)
-  await dialog.getByRole('button', { name: '确认新增方案', exact: true }).click()
+  await dialog.getByRole('button', { name: '确认保存方案', exact: true }).click()
   await expect(dialog).not.toBeVisible()
   await expect(page.getByText('已新增检验标准方案；本次查验记录仍需保存', { exact: true })).toBeVisible()
   await expect(page.getByLabel('检验结果', { exact: true })).toHaveValue('99.8%')

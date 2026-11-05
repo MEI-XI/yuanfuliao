@@ -73,6 +73,7 @@ export const materialDetailsSchema = fieldsSchema.pick({ specification: true, co
 const catalogTimes = { created_at: z.string().nullable().default(null), updated_at: z.string().nullable().default(null) }
 export const materialSchema = materialDetailsSchema.extend({ ...catalogTimes, id: z.number(), name: z.string(), model: z.string(), aliases: z.string() })
 export const schemeSchema = z.object({ ...catalogTimes, id: z.number(), material_id: z.number().nullable(), name: z.string(), items: z.array(itemSchema) })
+export const schemeSaveSchema = schemeSchema.extend({ save_action: z.enum(['created', 'replaced', 'updated']) })
 export const partnerSchema = z.object({ id: z.number(), name: z.string(), kind: z.enum(['supplier', 'manufacturer']), address: z.string(), contact: z.string() })
 
 export class ApiError extends Error {
