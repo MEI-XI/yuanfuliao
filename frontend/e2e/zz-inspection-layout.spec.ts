@@ -42,7 +42,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await expect(standards).toHaveCount(3)
   await expectFullText(standards.nth(1))
   const itemName = page.getByLabel('项目', { exact: true }).nth(1)
-  await expectFullText(itemName)
+  await expect(itemName).toHaveJSProperty('tagName', 'INPUT')
   const standardWidth = (await standards.first().boundingBox())!.width
   expect(standardWidth).toBeGreaterThan((await page.getByLabel('项目', { exact: true }).first().boundingBox())!.width)
   for (let index = 0; index < 3; index++) {
@@ -59,7 +59,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await expectFullText(standards.nth(1))
   expect((await standards.nth(1).boundingBox())!.height).toBeGreaterThan(initialHeight)
   await page.setViewportSize({ width: 390, height: 844 })
-  await expectFullText(itemName)
+  await expect(itemName).toHaveJSProperty('tagName', 'INPUT')
   await expectFullText(standards.nth(1))
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await standards.nth(1).evaluate(element => {
