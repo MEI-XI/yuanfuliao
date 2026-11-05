@@ -5,7 +5,7 @@ import AuditLog from './AuditLog.vue'
 import PaginationBar from './PaginationBar.vue'
 import SearchableLibrary from './SearchableLibrary.vue'
 import AutoGrowTextarea from './AutoGrowTextarea.vue'
-import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialDetailsSchema, schemeSchema, schemeSaveSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
+import { api, json, raw, userSchema, ledgerSchema, materialSchema, materialSaveSchema, materialDetailsSchema, schemeSchema, schemeSaveSchema, partnerSchema, normalizeShelfLife, shelfLifeDayNotice, type User, type Ledger } from './api'
 const emit = defineEmits<{ close: []; userUpdated: [user: User]; reauthenticate: [] }>()
 const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
@@ -230,7 +230,16 @@ async function deleteCompany(entry: Ledger) {
   }, '')
 }
 onMounted(() => action(refresh, ''))
-async function saveMaterial() { await action(async () => { const { id, ...body } = material; await api(id ? `/materials/${id}` : '/materials', materialSchema, json(id ? 'PUT' : 'POST', body)); closeEditor() }) }
+async function saveMaterial() {
+  let message = '已保存'
+  await action(async () => {
+    const { id, ...body } = material
+    const saved = await api(id ? `/materials/${id}` : '/materials', materialSaveSchema, json(id ? 'PUT' : 'POST', body))
+    message = saved.save_action === 'replaced' ? '已替换同名物料' : '已保存'
+    if (returnPosition) returnPosition.id = saved.id
+    closeEditor()
+  }, () => message)
+}
 async function saveScheme() {
   let message = '已保存'
   await action(async () => {
@@ -283,9 +292,9 @@ async function testCloud() {
     <p v-if="error" role="alert" class="error">{{ error }}</p><p v-if="notice" role="status" class="success admin-notice">{{ notice }}</p>
     <section v-if="editor" class="admin-card admin-form" role="region" :aria-label="editor.title">
       <div class="module-heading"><h2 ref="formHeading" tabindex="-1">{{ editor.title }}</h2><button :disabled="busy" @click="closeEditor">返回列表</button></div>
-      <form v-if="editor.kind === 'material'" @submit.prevent="saveMaterial"><fieldset :disabled="busy">
+      <form v-if="editor.kind === 'material'" @submit.prevent="saveMaterial"><fieldset :disabled="busy"><p class="muted">同名物料内容不同会直接替换，完全相同则提示已存在。</p>
         <div class="field-grid"><label>物料名称<input v-model="material.name" required></label><label>型号<input v-model="material.model"></label><label class="wide">常用别名<input v-model="material.aliases"></label><label>规格<input v-model="material.specification"></label><label>包装<input v-model="material.packaging"></label><label>供应商或生产商<input v-model="material.company_name"></label><label>地址<input v-model="material.address"></label><label>联系方式<input v-model="material.contact"></label><label>保质期<input v-model="material.shelf_life" @blur="normalizeMaterialShelfLife"></label><label>地址来源<select v-model="material.address_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label><label>联系方式来源<select v-model="material.contact_source"><option value="">未注明</option><option value="supplier">供应商</option><option value="manufacturer">生产商</option></select></label></div>
-        <p v-if="shelfLifeDayNotice(material.shelf_life)" class="notice" role="status">{{ shelfLifeDayNotice(material.shelf_life) }}</p><div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '创建物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
+        <p v-if="shelfLifeDayNotice(material.shelf_life)" class="notice" role="status">{{ shelfLifeDayNotice(material.shelf_life) }}</p><div class="button-row"><button class="primary">{{ material.id ? '保存修改' : '保存物料' }}</button><button type="button" @click="closeEditor">取消返回</button></div>
       </fieldset></form>
       <form v-else-if="editor.kind === 'scheme'" @submit.prevent="saveScheme"><fieldset :disabled="busy">
         <div class="field-grid"><SearchableLibrary label="方案所属物料" placeholder="输入物料名称、型号或别名" empty-label="不绑定物料（通用方案）" :disabled="busy" :value="scheme.material_id || ''" :options="materials.map(entry => ({ value: entry.id, label: [entry.name, entry.model].filter(Boolean).join(' '), search: entry.aliases }))" @update:value="scheme.material_id = Number($event) || null" /><label>方案名称<input v-model="scheme.name" required></label></div>

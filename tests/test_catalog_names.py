@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from conftest import bootstrap
 
 
-@pytest.mark.parametrize('path,extra', [('materials', {}), ('partners', {'kind': 'supplier'})])
+@pytest.mark.parametrize('path,extra', [('partners', {'kind': 'supplier'})])
 def test_catalog_names_cannot_be_duplicated_on_create_or_edit(client, path, extra):
     bootstrap(client)
     first = client.post(f'/api/{path}', json={'name': '测试名称', **extra}).json()

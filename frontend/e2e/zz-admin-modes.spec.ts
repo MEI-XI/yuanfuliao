@@ -17,7 +17,7 @@ test('物料新增和编辑在各自页面打开，取消不会保存草稿', as
   await page.getByRole('button', { name: '新增物料', exact: true }).click()
   const create = page.getByRole('region', { name: '新增物料', exact: true })
   await create.getByLabel('物料名称', { exact: true }).fill('窗口测试物料')
-  await create.getByRole('button', { name: '创建物料', exact: true }).click()
+  await create.getByRole('button', { name: '保存物料', exact: true }).click()
   await expect(create).not.toBeVisible()
   const row = page.locator('.maintenance-row').filter({ hasText: '窗口测试物料' })
   await row.getByRole('button', { name: /修改/ }).click()

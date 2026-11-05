@@ -92,7 +92,7 @@ test('管理员维护检验标准，录入时自动带入，结果仍为空', as
   await page.getByRole('button', { name: '物料维护', exact: true }).click()
   await page.getByRole('button', { name: '新增物料', exact: true }).click()
   await page.getByLabel('物料名称', { exact: true }).fill('甘氨酸')
-  await page.getByRole('button', { name: '创建物料', exact: true }).click()
+  await page.getByRole('button', { name: '保存物料', exact: true }).click()
   await page.getByRole('button', { name: '检验标准方案', exact: true }).click()
   await page.getByRole('button', { name: '新增检验方案', exact: true }).click()
   await page.getByRole('combobox', { name: '方案所属物料', exact: true }).fill('甘氨酸')

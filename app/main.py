@@ -488,26 +488,44 @@ def create_app(database_url: str | None = None) -> FastAPI:
                for existing_id, existing_name in session.execute(select(model.id, model.name))):
             raise HTTPException(409, '存在重名项目，请修改名称后再保存')
 
-    @app.post("/api/materials", status_code=201)
-    def add_material(body: MaterialInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
-        unique_catalog_name(session, Material, body.name)
-        material = Material(**body.model_dump())
-        session.add(material)
-        session.commit()
-        request.state.audit_details = {'subject_path': f'/api/materials/{material.id}'}
-        return {"id": material.id, **body.model_dump(), "created_at": material.created_at, "updated_at": material.updated_at}
-
-    @app.put("/api/materials/{material_id}")
-    def edit_material(material_id: int, body: MaterialInput, user: User = Depends(administrator), session: Session = Depends(db)):
-        material = session.get(Material, material_id)
-        if not material:
+    def save_material(body, session, material_id=None):
+        session.execute(text('SELECT pg_advisory_xact_lock(hashtext(:key))'), {'key': 'catalog-name:materials'})
+        original = session.get(Material, material_id) if material_id else None
+        if material_id and original is None:
             raise HTTPException(404, "物料不存在")
-        unique_catalog_name(session, Material, body.name, material_id)
-        for key, value in body.model_dump().items():
+        existing = next((entry for entry in session.scalars(select(Material))
+                         if entry.name.strip().casefold() == body.name.strip().casefold()), None)
+        values = body.model_dump()
+        if existing:
+            old_values = MaterialInput.model_validate({key: getattr(existing, key) for key in values}).model_dump()
+            if all(old_values[key] == value for key, value in values.items() if key != 'name'):
+                raise HTTPException(409, '已经有同样的物料，内容完全一致，无需重复保存')
+        material = existing or original or Material()
+        is_new = material.id is None
+        save_action = 'created' if is_new else 'replaced' if existing and existing.id != material_id else 'updated'
+        for key, value in values.items():
             setattr(material, key, value)
         material.updated_at = utcnow()
+        if is_new:
+            material.created_at = material.updated_at
+        session.add(material)
         session.commit()
-        return {"id": material.id, **body.model_dump(), "created_at": material.created_at, "updated_at": material.updated_at}
+        return {"id": material.id, **values, "created_at": material.created_at, "updated_at": material.updated_at, "save_action": save_action}
+
+    @app.post("/api/materials", status_code=201)
+    def add_material(body: MaterialInput, request: Request, response: Response, user: User = Depends(administrator), session: Session = Depends(db)):
+        result = save_material(body, session)
+        request.state.audit_details = {'subject_path': f'/api/materials/{result["id"]}'}
+        if result['save_action'] != 'created':
+            response.status_code = 200
+            request.state.audit_action = '修改物料'
+        return result
+
+    @app.put("/api/materials/{material_id}")
+    def edit_material(material_id: int, body: MaterialInput, request: Request, user: User = Depends(administrator), session: Session = Depends(db)):
+        result = save_material(body, session, material_id)
+        request.state.audit_details = {'subject_path': f'/api/materials/{result["id"]}'}
+        return result
 
     @app.get("/api/schemes")
     def schemes(material_id: int | None = None, user: User = Depends(current_user), session: Session = Depends(db)):
