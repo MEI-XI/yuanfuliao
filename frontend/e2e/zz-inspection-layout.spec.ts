@@ -38,6 +38,8 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await materialName.pressSequentially('第二行名称')
   await expect(materialName).toHaveValue('长标准示例物料\n第二行名称')
   await expectFullText(materialName)
+  await page.locator('.partner-section').screenshot({ path: '../tmp/compact-partner-desktop.png' })
+  await page.locator('.checks-section').screenshot({ path: '../tmp/compact-checks-desktop.png' })
   const photoWidth = (await page.locator('.image-panel').boundingBox())!.width
   const formWidth = (await page.locator('.form-panel').boundingBox())!.width
   await page.getByRole('radio', { name: '检验', exact: true }).check()
