@@ -38,6 +38,7 @@ test('长标准完整显示、随编辑和屏幕宽度增高，保存重开后�
   await materialName.pressSequentially('第二行名称')
   await expect(materialName).toHaveValue('长标准示例物料\n第二行名称')
   await expectFullText(materialName)
+  await page.getByRole('region', { name: '包装图片拖入上传区域' }).screenshot({ path: '../tmp/packaging-drop-zone.png' })
   await page.locator('.partner-section').screenshot({ path: '../tmp/compact-partner-desktop.png' })
   await page.locator('.checks-section').screenshot({ path: '../tmp/compact-checks-desktop.png' })
   const photoWidth = (await page.locator('.image-panel').boundingBox())!.width
