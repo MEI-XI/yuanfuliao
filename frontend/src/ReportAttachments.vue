@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { z } from 'zod'
 import { api, raw } from './api'
+
+const PdfReportViewer = defineAsyncComponent(() => import('./PdfReportViewer.vue'))
 
 const props = defineProps<{ recordId: number | null; recordVersion: number | null; editable: boolean; pendingFiles: File[] }>()
 const attachmentSchema = z.object({
@@ -169,7 +171,7 @@ function fileSize(size: number) {
     <p v-if="previewLoading" class="muted" role="status">正在生成报告预览…</p>
     <p v-if="previewError" class="error" role="alert">{{ previewError }}</p>
     <img v-if="preview?.kind === 'image'" :src="preview.url" :alt="previewName" class="report-image-preview">
-    <iframe v-else-if="preview?.kind === 'pdf'" :src="preview.url" :title="previewName" class="report-pdf-preview"></iframe>
+    <PdfReportViewer v-else-if="preview?.kind === 'pdf'" :key="preview.url" :url="preview.url" />
     <pre v-else-if="preview?.kind === 'text'" class="report-text-preview">{{ preview.text }}</pre>
     <template #footer><button type="button" aria-label="关闭报告预览" @click="previewOpen = false">关闭</button></template>
   </el-dialog>
