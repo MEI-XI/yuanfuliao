@@ -11,7 +11,7 @@ test('管理员可查看空间分类并刷新，手机显示和失败重试正�
   await page.getByRole('button', { name: '管理与公共资料', exact: true }).click()
   await page.getByRole('button', { name: '占用空间', exact: true }).click()
   const section = page.getByRole('region', { name: '占用空间明细', exact: true })
-  await expect(section.getByText('已统计项目占用', { exact: true })).toBeVisible({ timeout: 30000 })
+  await expect(section.getByText('必要运行与业务数据占用', { exact: true })).toBeVisible({ timeout: 30000 })
   await expect(section.getByText('业务文件所在磁盘剩余', { exact: true })).toBeVisible()
   await expect(section.getByRole('cell', { name: '业务数据库', exact: true })).toBeVisible()
   await expect(section.getByRole('heading', { name: '资源回收与保留规则', exact: true })).toBeVisible()

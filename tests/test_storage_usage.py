@@ -14,6 +14,9 @@ def test_storage_requires_admin_and_counts_files(client, monkeypatch, tmp_path):
     assert response.status_code == 200
     result = response.json()
     categories = {row['key']: row for row in result['categories']}
+    assert not {'development_temp', 'python_runtime', 'frontend_dependencies', 'research', 'backups'} & categories.keys()
+    assert categories['application']['bytes'] > 0
+    assert 'configuration' in categories
     assert categories['images']['bytes'] == 123
     assert categories['reports']['bytes'] == 456
     assert result['database_bytes'] > 0

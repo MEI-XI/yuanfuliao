@@ -36,16 +36,16 @@ onBeforeUnmount(() => controller.abort())
 
 <template>
   <section class="admin-card storage-usage" aria-label="占用空间明细">
-    <div class="storage-heading"><div><h2>占用空间明细</h2><p class="muted">查看业务文件、数据库和临时文件占用，以及自动回收规则。</p></div><button type="button" :disabled="loading" @click="refresh">{{ loading ? '统计中…' : error ? '重试统计' : '刷新统计' }}</button></div>
+    <div class="storage-heading"><div><h2>占用空间明细</h2><p class="muted">仅统计项目必需的运行文件、现有业务数据及运行临时文件。</p></div><button type="button" :disabled="loading" @click="refresh">{{ loading ? '统计中…' : error ? '重试统计' : '刷新统计' }}</button></div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="loading" class="muted" role="status">正在统计占用空间，文件较多时请稍候…</p>
     <template v-if="usage">
       <p class="storage-time muted">统计时间：{{ date(usage.measured_at) }}<span v-if="error">（上次成功结果）</span></p>
       <div class="storage-summary">
-        <div><span>已统计项目占用</span><strong>{{ size(measuredTotal) }}</strong><small>下表文件分类与数据库之和</small></div>
+        <div><span>必要运行与业务数据占用</span><strong>{{ size(measuredTotal) }}</strong><small>必要文件、业务数据库及运行临时占用合计</small></div>
         <div><span>业务文件所在磁盘剩余</span><strong>{{ size(usage.disk.free) }}</strong><small>磁盘总容量 {{ size(usage.disk.total) }}</small></div>
       </div>
-      <p class="storage-scope muted">项目占用不等于整块磁盘已用空间；数据库可能位于其他服务器，不能用项目合计计算此磁盘剩余容量。</p>
+      <p class="storage-scope muted">不计入开发/实验目录、研究资料、旧备份、本机 Python 环境及前端构建依赖。服务器依赖需重新安装，安装后另占空间；此合计不是最终服务器容量或迁移压缩包大小。数据库包含台账、物料、检验方案、账号及历史数据，迁移时通过备份恢复。</p>
       <div class="table-scroll"><table class="ledger-table storage-table"><thead><tr><th>分类</th><th>占用空间</th><th>文件数量</th><th>说明与保留规则</th></tr></thead><tbody>
         <tr v-for="item in usage.categories" :key="item.key"><td>{{ item.label }}</td><td>{{ size(item.bytes) }}</td><td>{{ item.files === null ? '—' : item.files.toLocaleString('zh-CN') }}</td><td>{{ item.note }}</td></tr>
         <tr><td>业务数据库</td><td>{{ size(usage.database_bytes) }}</td><td>—</td><td>包含业务数据、索引等。删除数据后空间可能供数据库复用，不会立即全部归还磁盘。</td></tr>

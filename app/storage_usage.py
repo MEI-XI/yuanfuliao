@@ -52,6 +52,12 @@ def folder_usage(root, seen):
     root = Path(root)
     if not root.exists() or root.is_symlink() or root.is_junction():
         return size, count, errors
+    if root.is_file():
+        key = os.path.normcase(str(root.resolve()))
+        if key in seen:
+            return 0, 0, 0
+        seen.add(key)
+        return root.stat().st_size, 1, 0
     pending = [str(root.resolve())]
     while pending:
         directory = pending.pop()
@@ -62,7 +68,7 @@ def folder_usage(root, seen):
                         if entry.is_symlink():
                             continue
                         if entry.is_dir(follow_symlinks=False):
-                            if not os.path.isjunction(entry.path):
+                            if entry.name != '__pycache__' and not os.path.isjunction(entry.path):
                                 pending.append(entry.path)
                         elif entry.is_file(follow_symlinks=False):
                             key = os.path.normcase(entry.path)
@@ -85,18 +91,16 @@ def register_storage_routes(app, db, administrator):
             ('images', '包装图片', data / 'images', '记录、历史或识别任务引用的图片保留；无引用且超过30天的图片自动回收。'),
             ('reports', '报告附件', data / 'report-attachments', '随业务记录保留；永久删除记录时回收附件，30天以上孤立文件定期回收。'),
             ('templates', '服务器默认模板', Path(os.getenv('TEMPLATE_DIR', 'templates')), '长期保留，不自动删除；用户个人模板在用户设备上，不计入。'),
-            ('runtime_temp', '文档转换临时文件', data / 'runtime-temp', '正常转换结束立即删除；异常遗留超过7天自动清理。'),
-            ('backups', '本机备份目录', data / 'backups', '不自动删除；迁移后需单独配置备份保留策略。'),
-            ('development_temp', '开发、实验及旧临时目录', PROJECT_ROOT / 'tmp', '含数据库运行程序和实验资料，不能整体清空；不属于线上运行缓存，迁移时按需排除。'),
-            ('python_runtime', 'Python 运行环境', PROJECT_ROOT / '.venv', '程序依赖，不自动删除；服务器上重新安装。'),
-            ('frontend_dependencies', '前端构建依赖', PROJECT_ROOT / 'frontend/node_modules', '只用于构建，部署已构建网页时不必携带。'),
-            ('frontend_dist', '网页发布文件', PROJECT_ROOT / 'frontend/dist', '网站运行文件，随发布替换，不自动删除。'),
-            ('research', '研究资料', PROJECT_ROOT / 'research', '研究资料，不自动删除，迁移时按需排除。'),
+            ('runtime_temp', '文档转换临时文件', data / 'runtime-temp', '运行时占用，不需迁移；正常转换结束立即删除，异常遗留超过7天清理。'),
+            ('frontend_dist', '网页发布文件', PROJECT_ROOT / 'frontend/dist', '网站必需文件，发布时迁移；不包括前端构建依赖。'),
+            ('application', '后端程序与数据库迁移', [PROJECT_ROOT / 'app', PROJECT_ROOT / 'migrations'], '运行和数据库升级必需代码；不包括Python编译缓存和测试资料。'),
+            ('configuration', '运行配置与部署文件', [PROJECT_ROOT / name for name in ['alembic.ini', 'requirements.lock', 'pyproject.toml', 'Dockerfile', 'compose.yaml', 'deployment', '.env']] + [data / 'credential.key'], '包括依赖清单、配置和业务加密密钥；只统计大小，不显示内容。迁移时安全保留密钥，按服务器环境调整配置。'),
         ]
         seen = set()
         categories = []
         for key, label, path, note in rows:
-            size, count, errors = folder_usage(path, seen)
+            totals = [folder_usage(item, seen) for item in (path if isinstance(path, list) else [path])]
+            size, count, errors = (sum(parts[index] for parts in totals) for index in range(3))
             categories.append({'key': key, 'label': label, 'bytes': size, 'files': count,
                                'note': note + (f' 有{errors}个文件暂时无法读取大小。' if errors else '')})
         disk = shutil.disk_usage(data if data.exists() else data.parent)
