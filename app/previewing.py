@@ -2,6 +2,7 @@
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from app.storage_usage import temporary_root
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -23,7 +24,7 @@ def office_pdf(data: bytes, extension: str) -> bytes:
         kind = 'xlsx'
     else:
         raise HTTPException(422, '该文档类型不支持PDF预览')
-    with TemporaryDirectory(prefix='office-preview-') as temporary:
+    with TemporaryDirectory(prefix='office-preview-', dir=temporary_root()) as temporary:
         directory = Path(temporary)
         source = directory / ('source.' + extension)
         destination = directory / 'source.pdf'

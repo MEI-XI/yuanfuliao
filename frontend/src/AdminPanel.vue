@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { z } from 'zod'
 import AuditLog from './AuditLog.vue'
+import StorageUsage from './StorageUsage.vue'
 import PaginationBar from './PaginationBar.vue'
 import SearchableLibrary from './SearchableLibrary.vue'
 import AutoGrowTextarea from './AutoGrowTextarea.vue'
@@ -11,7 +12,7 @@ const props = defineProps<{ currentUser: User }>()
 const superadmin = computed(() => props.currentUser.role === 'superadmin')
 const roleNames = { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }
 const tab = ref('materials')
-const tabs = computed(() => [{ key: 'materials', name: '物料维护' }, { key: 'schemes', name: '检验标准方案' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }, ...(superadmin.value ? [{ key: 'audit', name: '操作日志' }] : [])])
+const tabs = computed(() => [{ key: 'materials', name: '物料维护' }, { key: 'schemes', name: '检验标准方案' }, { key: 'partners', name: '单位资料' }, { key: 'users', name: '账号与权限' }, { key: 'ledgers', name: '公司台账' }, { key: 'cloud', name: '云端与模板' }, { key: 'storage', name: '占用空间' }, ...(superadmin.value ? [{ key: 'audit', name: '操作日志' }] : [])])
 const error = ref(''), notice = ref(''), busy = ref(false)
 const users = ref<User[]>([]), ledgers = ref<Ledger[]>([])
 const materials = ref<z.infer<typeof materialSchema>[]>([]), schemes = ref<z.infer<typeof schemeSchema>[]>([]), partners = ref<z.infer<typeof partnerSchema>[]>([])
@@ -348,6 +349,7 @@ async function testCloud() {
       <div class="table-actions catalog-selection"><span role="status">合计 {{ users.length }} 条 · 筛选 {{ filteredUsers.length }} 条</span></div>
       <div class="maintenance-list"><div class="table-scroll"><table class="ledger-table catalog-table compact-catalog"><thead><tr><th>人员账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="entry in filteredUsers" :key="entry.id" :data-catalog-row="`account-${entry.id}`" class="maintenance-row"><td class="catalog-name">{{ entry.username }}</td><td class="">{{ roleNames[entry.role] }}</td><td class="">{{ entry.active ? '启用' : '停用' }}</td><td class="catalog-actions"><button class="maintenance-edit" :disabled="busy || (!superadmin && entry.role === 'superadmin')" @click="openAccount(entry)">修改</button><button v-if="entry.role !== 'superadmin'" class="maintenance-delete" :disabled="busy" @click="deleteAccount(entry)">删除</button></td></tr></tbody></table></div><p v-if="!filteredUsers.length" class="module-empty">{{ users.length ? '没有匹配的记录，请调整或清空筛选。' : '暂无记录，点击右上方按钮新增。' }}</p></div>
     </section>
+    <StorageUsage v-else-if="tab === 'storage'" />
     <AuditLog v-else-if="tab === 'audit' && superadmin" />
     <section v-else-if="tab === 'ledgers'" class="admin-card">
       <div class="module-heading"><h2>已建立台账</h2><button class="primary" :disabled="busy" @click="openCompany()">新增台账</button></div>

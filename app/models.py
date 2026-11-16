@@ -128,6 +128,7 @@ class Partner(Base):
 
 
 class Photo(Base):
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     __tablename__ = "photos"
     id: Mapped[int] = mapped_column(primary_key=True)
     ledger_id: Mapped[int] = mapped_column(ForeignKey("ledgers.id"))
@@ -138,6 +139,7 @@ class Photo(Base):
 
 
 class RecognitionJob(Base):
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     __tablename__ = "recognition_jobs"
     id: Mapped[int] = mapped_column(primary_key=True)
     ledger_id: Mapped[int] = mapped_column(ForeignKey("ledgers.id"))

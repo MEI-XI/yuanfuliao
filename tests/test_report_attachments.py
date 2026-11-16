@@ -193,8 +193,9 @@ def test_office_report_attachment_preview_renders_the_uploaded_document(client, 
         attachment = upload(client, record, output.getvalue(), f'报告.{kind}').json()['attachment']
         preview = client.get(f'/api/reports/{attachment["id"]}/preview')
     else:
+        before_preview = client.get('/api/records').json()
         preview = client.post('/api/reports/preview', files={'file': (f'报告.{kind}', output.getvalue(), 'application/octet-stream')})
-        assert client.get('/api/records').json() == [record]
+        assert client.get('/api/records').json() == before_preview
         assert client.get(f'/api/records/{record["id"]}/reports').json() == []
     assert preview.status_code == 200, preview.text
     assert preview.headers['content-type'] == 'application/pdf'

@@ -64,10 +64,14 @@ class RecycleCleaner:
 
     def clean(self):
         from app.audit import purge_expired_audit_logs
+        from app.resource_cleanup import clean_resources
+        from app.storage_usage import purge_stale_temporary_files
         with Session(self.engine) as session:
             purge_expired_records(session)
             purge_expired_audit_logs(session)
+            clean_resources(session)
             session.commit()
+        purge_stale_temporary_files()
 
     def start(self):
         self.clean()

@@ -114,6 +114,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     from app.maintenance import register_maintenance_routes
     register_maintenance_routes(app, db, administrator)
+    from app.storage_usage import register_storage_routes
+    register_storage_routes(app, db, administrator)
 
     @app.exception_handler(IntegrityError)
     async def duplicate(request, exc):
@@ -672,6 +674,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return Response(content, media_type=media, headers={"Content-Disposition": f"attachment; filename=\"reports.{suffix}\"; filename*=UTF-8''{quote(filename)}"})
 
     def validate_images(image_ids, ledger_id, user, session):
+        from app.resource_cleanup import protect_resource_references
+        protect_resource_references(session)
         for image_id in image_ids:
             image = session.get(Photo, image_id)
             if not image or image.ledger_id != ledger_id:
@@ -744,6 +748,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return result
 
     def validate_job(job_id, image_ids, ledger_id, session):
+        from app.resource_cleanup import protect_resource_references
+        protect_resource_references(session)
         if job_id is None:
             return
         job = session.get(RecognitionJob, job_id)

@@ -6,6 +6,7 @@ import subprocess
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from app.storage_usage import temporary_root
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from docx import Document
@@ -204,7 +205,7 @@ try {
 
 
 def _convert_legacy(data, extension, kind):
-    with TemporaryDirectory(prefix='template-convert-') as temporary:
+    with TemporaryDirectory(prefix='template-convert-', dir=temporary_root()) as temporary:
         directory = Path(temporary)
         source = directory / ('source.' + extension)
         destination = directory / ('source.' + kind)
