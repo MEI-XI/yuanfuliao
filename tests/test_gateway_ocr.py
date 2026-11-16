@@ -108,3 +108,42 @@ def test_auxiliary_rejects_truncated_output_even_when_partial_json_is_valid(monk
         lambda request: httpx.Response(200, json={'choices': [{'message': {'content': '{"material_name":"甘氨酸"}'}, 'finish_reason': 'length'}]})), **kwargs))
     with pytest.raises(CloudRecognitionError, match='截断'):
         cloud_extract([], [['品名：甘氨酸']], 'test-only-key', base_url='http://gateway.test/v1', thinking_mode='low')
+
+
+def test_gateway_and_auxiliary_use_external_secret_file_without_windows(tmp_path, monkeypatch):
+    config_path = tmp_path / 'ocr-gateway.json'
+    config_path.write_text(json.dumps({'base_url': 'http://gateway.test/v1', 'model': 'PaddleOCR-VL-1.5-0.9B', 'api_key_file': 'gateway.key'}), encoding='utf-8')
+    (tmp_path / 'gateway.key').write_text('test-server-key\n', encoding='utf-8')
+    monkeypatch.setenv('OCR_GATEWAY_CONFIG', str(config_path))
+    monkeypatch.setattr(gateway_ocr, 'decrypt_gateway_key', lambda path: pytest.fail('Server secrets must not invoke Windows DPAPI'))
+    real_client = httpx.Client
+    models = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        models.append(body['model'])
+        assert request.headers['authorization'] == 'Bearer test-server-key'
+        content = '品名：甘氨酸' if body['model'].startswith('Paddle') else '{"material_name":"甘氨酸"}'
+        return httpx.Response(200, json={'choices': [{'message': {'content': content}, 'finish_reason': 'stop'}]})
+
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs))
+    assert gateway_ocr.configured_scanner()(Path('tests/fixtures/label.png'))['provider'] == 'PaddleOCR-VL-1.5-0.9B'
+    assert gateway_ocr.configured_auxiliary()([], [['品名：甘氨酸']])['material_name'] == '甘氨酸'
+    assert models == ['PaddleOCR-VL-1.5-0.9B', 'deepseek-flash']
+    assert 'test-server-key' not in json.dumps(gateway_ocr.auxiliary_status())
+
+
+@pytest.mark.parametrize('secret', [None, ' \n'])
+def test_external_gateway_missing_or_empty_secret_reports_safe_error(tmp_path, monkeypatch, secret):
+    config_path = tmp_path / 'ocr-gateway.json'
+    config_path.write_text(json.dumps({'base_url': 'http://gateway.test/v1', 'model': 'PaddleOCR-VL-1.5-0.9B', 'api_key_file': 'private-gateway.key'}), encoding='utf-8')
+    if secret is not None:
+        (tmp_path / 'private-gateway.key').write_text(secret, encoding='utf-8')
+    monkeypatch.setenv('OCR_GATEWAY_CONFIG', str(config_path))
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: pytest.fail('Missing credential must not make an HTTP request'))
+    with pytest.raises(GatewayRecognitionError) as error:
+        gateway_ocr.configured_scanner()(Path('tests/fixtures/label.png'))
+    assert 'private-gateway.key' not in str(error.value)
+    with pytest.raises(CloudRecognitionError) as error:
+        gateway_ocr.configured_auxiliary()([], [])
+    assert 'private-gateway.key' not in str(error.value)

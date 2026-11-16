@@ -23,7 +23,10 @@ def gateway_config_path():
 def read_gateway_config(path):
     config = json.loads(path.read_text(encoding='utf-8-sig'))
     if not isinstance(config, dict) or any(not isinstance(config.get(key), str) or not config[key].strip()
-                                          for key in ('base_url', 'model', 'protected_key')):
+                                          for key in ('base_url', 'model')):
+        raise ValueError('incomplete gateway configuration')
+    if not any(isinstance(config.get(key), str) and config[key].strip()
+               for key in ('protected_key', 'api_key_file')):
         raise ValueError('incomplete gateway configuration')
     return config
 
@@ -45,7 +48,18 @@ def decrypt_gateway_key(path):
 
 def load_gateway_config(path):
     config = read_gateway_config(path)
-    return {**config, 'api_key': decrypt_gateway_key(path)}
+    if config.get('api_key_file'):
+        # Server deployments mount a private secret file outside the source tree.
+        # Relative paths are resolved against the external config, not the process cwd.
+        secret_path = Path(config['api_key_file'])
+        if not secret_path.is_absolute():
+            secret_path = path.parent / secret_path
+        key = secret_path.read_text(encoding='utf-8-sig').strip()
+        if not key:
+            raise ValueError('credential unavailable')
+    else:
+        key = decrypt_gateway_key(path)
+    return {**config, 'api_key': key}
 
 
 def configured_scanner():
@@ -78,9 +92,9 @@ class ConfiguredGatewayAuxiliary:
         try:
             config = load_gateway_config(self.path)
         except FileNotFoundError:
-            raise CloudRecognitionError('尚未配置 DeepSeek 辅助识别，请管理员配置模型网关的本机加密文件') from None
+            raise CloudRecognitionError('尚未配置 DeepSeek 辅助识别，请管理员配置模型网关及凭据文件') from None
         except Exception:
-            raise CloudRecognitionError('DeepSeek 辅助网关配置无法读取，请管理员检查运行服务的账号及本机加密配置') from None
+            raise CloudRecognitionError('DeepSeek 辅助网关配置无法读取，请管理员检查运行服务的账号及凭据文件权限') from None
         return cloud_extract(paths, texts, config['api_key'], base_url=config['base_url'], thinking_mode=thinking_mode)
 
 
@@ -93,7 +107,7 @@ class ConfiguredGatewayScanner:
             config = load_gateway_config(self.path)
             scanner = GatewayScanner(config['base_url'], config['model'], config['api_key'])
         except Exception:
-            raise GatewayRecognitionError('OCR 网关配置无法读取，请检查运行服务的 Windows 账号及本机加密配置') from None
+            raise GatewayRecognitionError('OCR 网关配置无法读取，请检查运行服务的账号及凭据文件权限') from None
         return scanner(image_path)
 
 
