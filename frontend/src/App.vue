@@ -126,7 +126,7 @@ const recognitionLabel = computed(() => {
   if (job.local_status === 'queued') return `本地排队中 · 前方约 ${job.queue_ahead} 个任务`
   if (job.local_status === 'running') return `基础识别中 · 共 ${job.image_ids.length} 张图片`
   if (job.local_status === 'failed') return job.error || '基础识别失败，可以重试或手动填写'
-  return '基础识别已完成'
+  return job.error || '基础识别已完成'
 })
 const catalog = ref<z.infer<typeof materialSchema>[]>([])
 const standards = ref<z.infer<typeof schemeSchema>[]>([])

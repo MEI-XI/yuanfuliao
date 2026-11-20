@@ -6,6 +6,7 @@ import httpx
 import pytest
 from PIL import Image
 
+from app.gateway_ocr import GatewayScanner
 from conftest import bootstrap
 from test_records import new_ledger
 
@@ -55,6 +56,44 @@ def test_unlabelled_dates_across_photos_are_combined_before_assigning_fields(cli
         time.sleep(.02)
     assert job['fields']['production_dates'] == ['2026-01-14']
     assert job['fields']['expiry_date'] == '2027-01-13'
+
+
+@pytest.mark.parametrize('first_text', ['品名：甘氨酸', ''])
+def test_group_recognition_handles_an_empty_ocr_reply(client, first_text):
+    bootstrap(client)
+    ledger = new_ledger(client)
+    image_ids = [run_label(client, ledger, ['品名：测试物料'])['image_ids'][0] for _ in range(2)]
+    replies = iter([first_text, ''])
+
+    def respond(request):
+        return httpx.Response(200, json={
+            'choices': [{'message': {'content': next(replies)}, 'finish_reason': 'stop'}],
+        })
+
+    def supplement(paths, texts, thinking_mode):
+        assert len(paths) == 2
+        assert texts == [[first_text], []]
+        return {'specification': '25kg'}
+
+    client.app.state.cloud_extract = supplement
+    with httpx.Client(transport=httpx.MockTransport(respond)) as gateway:
+        client.app.state.scan_image = GatewayScanner('http://gateway.test/v1', 'test-ocr', 'test-key', client=gateway)
+        job = client.post(f'/api/ledgers/{ledger}/recognition', json={'image_ids': image_ids}).json()
+        for _ in range(100):
+            job = client.get(f'/api/recognition/{job["id"]}').json()
+            if job['local_status'] in {'done', 'failed'} and job['cloud_status'] in {'done', 'failed', 'disabled'}:
+                break
+            time.sleep(.02)
+
+    if first_text:
+        assert job['local_status'] == 'done'
+        assert job['fields']['material_name'] == '甘氨酸'
+        assert job['cloud_status'] == 'done', job['cloud_error']
+        assert job['cloud_fields']['specification'] == '25kg'
+        assert '第 2 张' in job['error']
+    else:
+        assert job['local_status'] == 'failed'
+        assert '所有图片' in job['error']
 
 
 def test_explicit_label_fields_include_packaging_batch_standard_and_delivery_details(client):

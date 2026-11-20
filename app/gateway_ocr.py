@@ -15,6 +15,10 @@ class GatewayRecognitionError(RuntimeError):
     pass
 
 
+class GatewayNoTextError(GatewayRecognitionError):
+    """A valid OCR response found no readable text in this image."""
+
+
 def gateway_config_path():
     default = Path(os.getenv('LOCALAPPDATA', str(Path.home() / '.config'))) / 'Yuanfuliao' / 'ocr-gateway.json'
     return Path(os.getenv('OCR_GATEWAY_CONFIG', str(default)))
@@ -136,15 +140,19 @@ class GatewayScanner:
             try:
                 choice = response.json()['choices'][0]
                 content = choice['message']['content']
+                if choice.get('finish_reason') == 'length':
+                    raise ValueError('truncated content')
                 if isinstance(content, list):
                     content = '\n'.join(part['text'] for part in content if part.get('type') == 'text')
-                if not isinstance(content, str) or not content.strip() or choice.get('finish_reason') == 'length':
-                    raise ValueError('incomplete content')
-            except (KeyError, IndexError, TypeError, ValueError):
-                raise GatewayRecognitionError('OCR 网关返回为空、格式不正确或结果被截断，请重试') from None
+                if not isinstance(content, str):
+                    raise ValueError('invalid content type')
+            except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+                raise GatewayRecognitionError('OCR 网关响应格式不正确或结果被截断，请重试') from None
             # Preserve raw text as evidence; remove Markdown table separators for the existing parser.
             texts = [re.sub(r'^#+\s*', '', line.strip()).replace('**', '') for line in content.splitlines() if line.strip()]
             texts = [re.sub(r'\s*\|\s*', '：', line.strip('| ')) if '|' in line else line for line in texts if not re.fullmatch(r'[\s|:\-]+', line)]
+            if not any(line.strip() for line in texts):
+                raise GatewayNoTextError('这张图片未识别到文字')
             return {'texts': texts, 'boxes': [], 'rotation': 0, 'provider': self.model, 'raw_text': content}
         except httpx.HTTPError:
             raise GatewayRecognitionError('OCR 网关连接失败或响应超时，请检查内网连接与网关服务') from None

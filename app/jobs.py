@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.models import Photo, RecognitionJob
 from app.recognition import CloudRecognitionError, combine_fields
 from app.storage import photo_path
-from app.gateway_ocr import GatewayRecognitionError
+from app.gateway_ocr import GatewayNoTextError, GatewayRecognitionError
 
 
 def run_local(app, job_id):
@@ -13,11 +13,23 @@ def run_local(app, job_id):
         paths = [photo_path(session.get(Photo, image_id).path) for image_id in job.image_ids]
         session.commit()
     try:
-        evidence = [app.state.scan_image(path) for path in paths]
+        evidence, unreadable = [], []
+        for index, path in enumerate(paths, start=1):
+            try:
+                evidence.append(app.state.scan_image(path))
+            except GatewayNoTextError:
+                unreadable.append(index)
+                # Keep one evidence entry per photo for auxiliary recognition.
+                evidence.append({'texts': [], 'boxes': []})
+        if len(unreadable) == len(paths):
+            raise GatewayNoTextError('所有图片都未识别到文字，请换一张文字清晰的照片')
         fields, conflicts = combine_fields(evidence)
         with Session(app.state.engine) as session:
             job = session.get(RecognitionJob, job_id)
             job.local_status, job.fields, job.conflicts, job.evidence = "done", fields, conflicts, evidence
+            if unreadable:
+                numbers = '、'.join(map(str, unreadable))
+                job.error = f'已识别其余图片，第 {numbers} 张未读到文字，请核对'
             cloud_enabled = job.cloud_enabled
             session.commit()
         if cloud_enabled:
