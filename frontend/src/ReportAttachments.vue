@@ -16,7 +16,7 @@ const metadataSchema = z.object({
 })
 type Attachment = z.infer<typeof attachmentSchema>
 type RecordMetadata = z.infer<typeof metadataSchema>
-const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata]; filesChanged: [files: File[]]; loaded: [count: number] }>()
+const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata & { report_count: number }]; filesChanged: [files: File[]]; loaded: [count: number] }>()
 const attachments = ref<Attachment[]>([])
 const loading = ref(false)
 const busy = ref(false)
@@ -85,10 +85,9 @@ async function uploadReports(files: File[]) {
   error.value = ''
   const failures: string[] = []
   const accepted = files.filter(file => {
-    if (file.size > 20 * 1024 * 1024) failures.push(`“${file.name}”超过 20 MiB`)
-    else if (!reportExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) failures.push(`“${file.name}”的格式不支持`)
-    else return true
-    return false
+    const problem = fileError(file)
+    if (problem) failures.push(problem)
+    return !problem
   })
   if (!accepted.length || recordId === null) {
     if (accepted.length) emit('filesChanged', [...props.pendingFiles, ...accepted])
@@ -108,7 +107,7 @@ async function uploadReports(files: File[]) {
         if (props.recordId !== recordId) return
         version = result.record_version
         attachments.value.push(result.attachment)
-        emit('recordChanged', result)
+        notifyRecordChanged(result)
       } catch (cause) {
         failures.push(`“${file.name}”：${cause instanceof Error ? cause.message : '报告上传失败'}`)
         if (!(cause instanceof ApiError) || ![400, 413, 415, 422].includes(cause.status)) {
@@ -124,15 +123,50 @@ async function uploadReports(files: File[]) {
   }
 }
 
+function fileError(file: File) {
+  if (file.size > 20 * 1024 * 1024) return `“${file.name}”超过 20 MiB`
+  if (!reportExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) return `“${file.name}”的格式不支持`
+  return ''
+}
+
+function notifyRecordChanged(metadata: RecordMetadata) {
+  const { record_version, status, checker_id, checked_at, updated_at } = metadata
+  emit('recordChanged', { record_version, status, checker_id, checked_at, updated_at, report_count: attachments.value.length })
+}
+
+async function replaceReport(event: Event, attachment: Attachment) {
+  const input = event.target
+  if (!(input instanceof HTMLInputElement)) return
+  const file = input.files?.[0]
+  input.value = ''
+  const { recordId, recordVersion } = props
+  if (!file || !props.editable || busy.value || loading.value || recordId === null || recordVersion === null) return
+  error.value = fileError(file)
+  if (error.value) return
+  const body = new FormData()
+  body.append('file', file)
+  body.append('version', String(recordVersion))
+  busy.value = true
+  try {
+    const result = await api(`/reports/${attachment.id}/replace`, metadataSchema.extend({ attachment: attachmentSchema }), { method: 'POST', body })
+    if (props.recordId === recordId) {
+      attachments.value = attachments.value.map(item => item.id === attachment.id ? result.attachment : item)
+      notifyRecordChanged(result)
+    }
+  } catch (cause) {
+    if (props.recordId === recordId) error.value = cause instanceof Error ? cause.message : '更换报告失败'
+  } finally { busy.value = false }
+}
+
 async function remove(attachment: Attachment) {
-  if (props.recordVersion === null || !props.editable || !window.confirm(`删除报告“${attachment.filename}”？`)) return
+  if (props.recordVersion === null || !props.editable || busy.value || loading.value || !window.confirm(`删除报告“${attachment.filename}”？`)) return
   const recordId = props.recordId
   busy.value = true; error.value = ''
   try {
     const result = await api(`/reports/${attachment.id}?version=${props.recordVersion}`, metadataSchema, { method: 'DELETE' })
     if (props.recordId === recordId) {
       attachments.value = attachments.value.filter(item => item.id !== attachment.id)
-      emit('recordChanged', result)
+      notifyRecordChanged(result)
     }
   } catch (cause) {
     if (props.recordId === recordId) error.value = cause instanceof Error ? cause.message : '报告删除失败'
@@ -202,18 +236,28 @@ function fileSize(size: number) {
       <li v-for="(file, index) in pendingFiles" :key="index"><div class="report-details"><strong>{{ file.name }}</strong><span class="muted">{{ fileSize(file.size) }} · 待上传</span></div><button type="button" :aria-label="`查看待上传报告 ${file.name}`" @click="showPendingPreview(file)">查看</button><button v-if="editable" type="button" :aria-label="`移除待上传报告 ${file.name}`" @click="emit('filesChanged', pendingFiles.filter((_, position) => position !== index))">移除</button></li>
     </ul>
     <div>
-      <p v-if="editable" class="muted report-formats">支持图片、PDF、Word、Excel和文本，每个文件不超过20 MiB。上传或删除后需重新核对记录。</p>
+      <p v-if="editable" class="muted report-formats">支持图片、PDF、Word、Excel和文本，每个文件不超过20 MiB。附件有变动后需重新核对记录。</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="loading || busy" class="muted" role="status">{{ loading ? '正在读取报告附件…' : '正在保存报告附件…' }}</p>
       <p v-if="!loading && !attachments.length && !pendingFiles.length" class="muted">暂无报告附件</p>
       <ul v-else class="report-list">
         <li v-for="attachment in attachments" :key="attachment.id">
           <button type="button" class="report-thumbnail" :aria-label="`查看报告 ${attachment.filename}`" @click="showPreview(attachment)">
-            <img v-if="attachment.media_type.startsWith('image/')" :src="`/api/reports/${attachment.id}/file`" alt="报告缩略图">
+            <img v-if="attachment.media_type.startsWith('image/')" :src="`/api/reports/${attachment.id}/file?v=${encodeURIComponent(attachment.created_at)}`" alt="报告缩略图">
             <span v-else aria-hidden="true">{{ attachment.filename.split('.').pop()?.toUpperCase() }}</span>
           </button>
           <div class="report-details"><strong>{{ attachment.filename }}</strong><span class="muted">{{ fileSize(attachment.size) }} · {{ new Date(attachment.created_at).toLocaleString('zh-CN', { hour12: false }) }}</span></div>
-          <div class="report-actions"><button type="button" @click="showPreview(attachment)">查看</button><a :href="`/api/reports/${attachment.id}/file?download=true`" :download="attachment.filename">下载</a><button v-if="editable" type="button" class="text-button" :disabled="busy" :aria-label="`删除报告 ${attachment.filename}`" @click="remove(attachment)">删除</button></div>
+          <div class="report-actions">
+            <button type="button" @click="showPreview(attachment)">查看</button>
+            <a :href="`/api/reports/${attachment.id}/file?download=true`" :download="attachment.filename">下载</a>
+            <template v-if="editable">
+              <label class="report-replace" :class="{ disabled: busy || loading }">更换
+                <input type="file" :accept="reportExtensions.join(',')" :aria-label="`更换报告 ${attachment.filename}`"
+                  :disabled="busy || loading" @change="replaceReport($event, attachment)">
+              </label>
+              <button type="button" class="text-button" :disabled="busy" :aria-label="`删除报告 ${attachment.filename}`" @click="remove(attachment)">删除</button>
+            </template>
+          </div>
         </li>
       </ul>
     </div>
@@ -254,5 +298,32 @@ function fileSize(size: number) {
 }
 .report-attachment-drop span {
   font-size: 13px;
+}
+.report-actions {
+  flex-wrap: wrap;
+}
+.report-replace {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  color: var(--teal);
+  cursor: pointer;
+}
+.report-replace input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: inherit;
+}
+.report-replace:focus-within {
+  outline: 2px solid var(--teal);
+  outline-offset: 3px;
+}
+.report-replace.disabled {
+  opacity: .55;
+  cursor: default;
 }
 </style>

@@ -33,7 +33,7 @@ const allCompanies = ref(false)
 const people = ref<{ id: number; username: string }[]>([])
 const historyOpen = ref(false)
 const histories = ref<{ actor_id: number; action: string; at: string; snapshot: CheckRecord }[]>([])
-const actionNames: Record<string, string> = { created: '创建记录', checked: '核对记录', edited: '修改记录', voided: '作废记录', restored: '还原记录', report_uploaded: '上传检验报告', report_deleted: '删除检验报告' }
+const actionNames: Record<string, string> = { created: '创建记录', checked: '核对记录', edited: '修改记录', voided: '作废记录', restored: '还原记录', report_uploaded: '上传检验报告', report_replaced: '更换检验报告', report_deleted: '删除检验报告' }
 const view = ref<'home' | 'ledger' | 'editor' | 'admin' | 'templates' | 'recycle'>('home')
 const returnToEditor = ref(false)
 const editorReturn = ref<'ledger' | 'recycle'>('ledger')
@@ -55,22 +55,41 @@ const selectedIds = ref<number[]>([])
 const previewIds = ref<number[]>([])
 const attachmentRecord = ref<CheckRecord | null>(null)
 const attachmentsOpen = ref(false)
-function openRecordReports(record: CheckRecord) {
+function canEditRecord(record: CheckRecord) {
+  return record.status !== 'void' && (administrator.value || record.creator_id === user.value?.id)
+}
+const attachmentEditable = computed(() => !!attachmentRecord.value && canEditRecord(attachmentRecord.value))
+async function openRecordReports(record: CheckRecord) {
   if (!record.inspection_enabled) { window.alert('该记录为未检验，无法查看检验报告'); return }
-  attachmentRecord.value = record
-  attachmentsOpen.value = true
+  await perform(async () => {
+    const latest = await api(`/records/${record.id}`, recordSchema)
+    if (!latest.inspection_enabled) { window.alert('该记录为未检验，无法查看检验报告'); return }
+    attachmentRecord.value = latest
+    attachmentsOpen.value = true
+  })
 }
 function reportsLoaded(count: number) {
-  if (!count) { attachmentsOpen.value = false; window.alert('该记录尚未上传检验报告附件') }
+  const record = attachmentRecord.value
+  if (!record) return
+  record.report_count = count
+  const row = records.value.find(item => item.id === record.id)
+  if (row) row.report_count = count
+  if (!count && !attachmentEditable.value) { attachmentsOpen.value = false; window.alert('该记录尚未上传检验报告附件') }
 }
 function openPreview(recordIds: number[]) { if (recordIds.length) previewIds.value = recordIds }
 const filter = reactive({ text: '', status: '', from: '', to: '', mine: false, creator: 0, inspection: '', reports: '', ledger: 0 })
 function clearRecordFilters() { Object.assign(filter, { text: '', status: '', from: '', to: '', mine: false, creator: 0, inspection: '', reports: '', ledger: 0 }) }
 const editing = ref<CheckRecord | null>(null)
-function updateAttachmentRecord(metadata: Pick<CheckRecord, 'status' | 'checker_id' | 'checked_at' | 'updated_at'> & { record_version: number }) {
-  const record = editing.value || group.value?.savedRecord
+type AttachmentUpdate = Pick<CheckRecord, 'status' | 'checker_id' | 'checked_at' | 'updated_at' | 'report_count'> & { record_version: number }
+function applyAttachmentUpdate(record: CheckRecord | null, { record_version, ...metadata }: AttachmentUpdate) {
   if (!record) return
-  Object.assign(record, { version: metadata.record_version, status: metadata.status, checker_id: metadata.checker_id, checked_at: metadata.checked_at, updated_at: metadata.updated_at })
+  const changes = { ...metadata, version: record_version }
+  Object.assign(record, changes)
+  const row = records.value.find(item => item.id === record.id)
+  if (row) Object.assign(row, changes)
+}
+function updateAttachmentRecord(metadata: AttachmentUpdate) {
+  applyAttachmentUpdate(editing.value || group.value?.savedRecord || null, metadata)
 }
 const fields = ref(fieldsSchema.parse({}))
 const report = ref(reportSchema.parse({}))
@@ -421,7 +440,7 @@ function warningsFor(key: string) {
   return [...new Set([...job.field_warnings, ...job.cloud_warnings].filter(warning => warning.field === key).map(warning => warning.message))]
 }
 function formatSuggestion(value: unknown) { return Array.isArray(value) ? value.join('、') : String(value ?? '') }
-const editable = computed(() => !editing.value || (editing.value.status !== 'void' && (administrator.value || editing.value.creator_id === user.value?.id)))
+const editable = computed(() => !editing.value || canEditRecord(editing.value))
 const statusText = { pending: '待核对', checked: '已核对', void: '作废' }
 const productionDates = computed({
   get: () => fields.value.production_dates.map(d => d.replaceAll('-', '.')).join('、'),
@@ -959,7 +978,7 @@ async function download(kind: 'xlsx' | 'docx') {
     </main>
     <ReportPreview v-if="previewIds.length" :user-id="user.id" :record-ids="previewIds" @close="previewIds = []" />
     <el-dialog v-model="attachmentsOpen" :title="`检验报告附件 · ${attachmentRecord?.fields.material_name || '未填写物料'}`" width="min(900px, 96vw)">
-      <ReportAttachments v-if="attachmentsOpen && attachmentRecord" :key="attachmentRecord.id" :record-id="attachmentRecord.id" :record-version="attachmentRecord.version" :editable="false" :pending-files="[]" @loaded="reportsLoaded" />
+      <ReportAttachments v-if="attachmentsOpen && attachmentRecord" :key="attachmentRecord.id" :record-id="attachmentRecord.id" :record-version="attachmentRecord.version" :editable="attachmentEditable" :pending-files="[]" @loaded="reportsLoaded" @record-changed="applyAttachmentUpdate(attachmentRecord, $event)" />
       <template #footer><button type="button" aria-label="关闭附件列表" @click="attachmentsOpen = false">关闭</button></template>
     </el-dialog>
     <el-dialog v-model="saveSchemeOpen" title="保存为检验标准方案" width="min(720px, 95vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy"><form @submit.prevent="saveSchemeInfo"><fieldset :disabled="busy"><p class="muted">同名方案内容不同会直接替换，完全相同则提示已存在。只保存项目名称和标准规定。本次检验结果与结论保留在当前记录中，记录仍需另行保存。</p><p v-if="schemeSaveError" role="alert" class="error">{{ schemeSaveError }}</p><div class="field-grid"><label>方案名称<AutoGrowTextarea v-model="schemeDraft.name" maxlength="120" required /></label><SearchableLibrary label="方案所属物料" placeholder="输入物料名称、型号或别名" empty-label="不绑定物料（通用方案）" :disabled="busy" :value="schemeDraft.material_id || ''" :options="catalog.map(entry => ({ value: entry.id, label: [entry.name, entry.model].filter(Boolean).join(' '), search: entry.aliases }))" @update:value="schemeDraft.material_id = Number($event) || null" /></div><div v-for="(item, index) in schemeDraft.items" :key="index" class="field-grid"><label>项目名称<AutoGrowTextarea v-model="item.name" /></label><label>标准规定<AutoGrowTextarea v-model="item.standard" /></label></div><p v-if="!schemeDraft.items.length" class="muted">当前没有检验项目，可返回录入界面添加后再保存。</p><div class="button-row"><button type="submit" class="primary" :disabled="!schemeDraft.items.length">确认保存方案</button><button type="button" @click="saveSchemeOpen = false">取消</button></div></fieldset></form></el-dialog>

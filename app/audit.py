@@ -27,7 +27,7 @@ ACTIONS = {
     'add_record': '创建记录', 'add_batch': '批量创建记录', 'edit_record': '修改记录',
     'export_excel': '导出台账', 'export_word': '导出检验报告', 'upload_image': '上传照片',
     'recognize': '发起识别',
-    'upload_report': '上传检验报告', 'delete_report': '删除检验报告',
+    'upload_report': '上传检验报告', 'replace_report': '更换检验报告', 'delete_report': '删除检验报告',
     'preview_export': '预览导出',
     'delete_recycled_record': '永久删除记录',
     'batch_restore_records': '批量还原记录',

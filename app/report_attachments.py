@@ -100,15 +100,20 @@ def _validate(data, extension):
         raise HTTPException(422, '报告文件损坏或内容与扩展名不符，请检查后重新上传') from exc
 
 
+def _read_report(file):
+    filename = _filename(file.filename)
+    data = file.file.read(MAX_REPORT_SIZE + 1)
+    if len(data) > MAX_REPORT_SIZE:
+        raise HTTPException(413, '单个报告文件不能超过20 MiB')
+    extension = Path(filename).suffix.lower()
+    _validate(data, extension)
+    return filename, data, extension
+
+
 def register_report_attachment_routes(app, db, current_user, get_record, record_view, append_history):
     @app.post('/api/reports/preview')
     def preview_unsaved_report(file: UploadFile, user: User = Depends(current_user)):
-        filename = _filename(file.filename)
-        data = file.file.read(MAX_REPORT_SIZE + 1)
-        if len(data) > MAX_REPORT_SIZE:
-            raise HTTPException(413, '单个报告文件不能超过20 MiB')
-        extension = Path(filename).suffix.lower()
-        _validate(data, extension)
+        _, data, extension = _read_report(file)
         headers = {'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store'}
         if extension in OFFICE_EXTENSIONS:
             from app.previewing import office_pdf
@@ -135,6 +140,23 @@ def register_report_attachment_routes(app, db, current_user, get_record, record_
         record.status, record.checker_id, record.checked_at = 'pending', None, None
         append_history(record, user, action, session)
 
+    def save_report_file(attachment, data, record, user, action, session):
+        path = report_attachment_path(attachment.storage_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.write_bytes(data)
+            session.add(attachment)
+            change_record(record, user, action, session)
+            session.flush()
+            session.refresh(attachment)
+            session.refresh(record)
+            result = {'attachment': attachment_view(attachment), **metadata(record)}
+            session.commit()
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        return result
+
     def metadata(record):
         return {'record_version': record.version, **{key: getattr(record, key) for key in ('status', 'checker_id', 'checked_at', 'updated_at')}}
 
@@ -160,27 +182,39 @@ def register_report_attachment_routes(app, db, current_user, get_record, record_
     @app.post('/api/records/{record_id}/reports', status_code=201)
     def upload_report(record_id: int, file: UploadFile, request: Request, version: int = Form(..., ge=1),
                       user: User = Depends(current_user), session: Session = Depends(db)):
-        filename = _filename(file.filename)
-        data = file.file.read(MAX_REPORT_SIZE + 1)
-        if len(data) > MAX_REPORT_SIZE:
-            raise HTTPException(413, '单个报告文件不能超过20 MiB')
-        extension = Path(filename).suffix.lower()
-        _validate(data, extension)
+        filename, data, extension = _read_report(file)
         record = editable(record_id, version, user, session)
         attachment = ReportAttachment(record_id=record.id, owner_id=user.id, filename=filename,
             storage_key=uuid.uuid4().hex + extension, media_type=MEDIA_TYPES[extension], size=len(data))
-        path = report_attachment_path(attachment.storage_key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            path.write_bytes(data)
-            session.add(attachment)
-            change_record(record, user, 'report_uploaded', session)
-            session.commit()
-        except Exception:
-            path.unlink(missing_ok=True)
-            raise
-        request.state.audit_details = {'record_id': record.id, 'filename': filename}
-        return {'attachment': attachment_view(attachment), **metadata(record)}
+        result = save_report_file(attachment, data, record, user, 'report_uploaded', session)
+        request.state.audit_details = {'record_id': record_id, 'filename': filename}
+        return result
+
+    @app.post('/api/reports/{attachment_id}/replace')
+    def replace_report(attachment_id: int, file: UploadFile, request: Request, version: int = Form(..., ge=1),
+                       user: User = Depends(current_user), session: Session = Depends(db)):
+        from app.resource_cleanup import schedule_file
+
+        filename, data, extension = _read_report(file)
+        record_id = session.scalar(select(ReportAttachment.record_id).where(ReportAttachment.id == attachment_id))
+        if record_id is None:
+            raise HTTPException(404, '报告附件不存在')
+        record = editable(record_id, version, user, session)
+        # Read current attachment metadata after acquiring the record lock.
+        attachment = session.get(ReportAttachment, attachment_id)
+        if attachment is None:
+            raise HTTPException(404, '报告附件不存在')
+        previous_filename = attachment.filename
+        old_path = report_attachment_path(attachment.storage_key)
+        attachment.filename = filename
+        attachment.storage_key = uuid.uuid4().hex + extension
+        attachment.media_type = MEDIA_TYPES[extension]
+        attachment.size = len(data)
+        attachment.created_at = utcnow()
+        schedule_file(session, old_path, report_attachment_path(''))
+        result = save_report_file(attachment, data, record, user, 'report_replaced', session)
+        request.state.audit_details = {'record_id': record_id, 'filename': filename, 'previous_filename': previous_filename}
+        return result
 
     @app.get('/api/reports/{attachment_id}/file')
     def report_file(attachment_id: int, download: bool = False, user: User = Depends(current_user), session: Session = Depends(db)):

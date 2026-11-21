@@ -94,6 +94,64 @@ def test_upload_report_preserves_record_fields_and_resets_checked_state(client):
     assert client.get(f'/api/reports/{attachment["id"]}/preview').content == PDF
 
 
+def test_replace_report_atomically_keeps_attachment_id_and_resets_checked_state(client):
+    record = create_record(client)
+    uploaded = upload(client, record).json()
+    attachment_id = uploaded['attachment']['id']
+    checked = client.post(f'/api/records/{record["id"]}/check', json={'version': uploaded['record_version']}).json()
+    url = f'/api/reports/{attachment_id}'
+    with Session(client.app.state.engine) as session:
+        old_path = report_attachment_path(session.get(ReportAttachment, attachment_id).storage_key)
+
+    assert client.post(f'{url}/replace', data={'version': checked['version']},
+                       files={'file': ('损坏的报告.pdf', b'bad')}).status_code == 422
+    new_content = '更正后的检验结果'.encode()
+    files = {'file': ('更正报告.txt', new_content)}
+    assert client.post(f'{url}/replace', data={'version': uploaded['record_version']}, files=files).status_code == 409
+    assert client.get(f'{url}/file').content == PDF
+    assert old_path.read_bytes() == PDF
+    assert client.get(f'/api/records/{record["id"]}').json()['version'] == checked['version']
+
+    response = client.post(f'{url}/replace', data={'version': checked['version']}, files=files)
+    assert response.status_code == 200, response.text
+    replacement = response.json()
+    assert replacement['attachment']['id'] == attachment_id
+    assert replacement['attachment']['filename'] == '更正报告.txt'
+    assert replacement['attachment']['created_at'] > uploaded['attachment']['created_at']
+    assert replacement['record_version'] == checked['version'] + 1
+    assert (replacement['status'], replacement['checker_id'], replacement['checked_at']) == ('pending', None, None)
+    assert client.get(f'/api/records/{record["id"]}/reports').json() == [replacement['attachment']]
+    assert client.get(f'{url}/file').content == new_content
+    assert not old_path.exists()
+    history = client.get(f'/api/records/{record["id"]}/history').json()
+    assert history[-1]['action'] == 'report_replaced'
+    audit_entry = client.get('/api/audit-logs', params={'action': '更换检验报告'}).json()['items'][0]
+    assert audit_entry['details']['previous_filename'] == uploaded['attachment']['filename']
+
+
+def test_replace_report_retains_old_file_when_commit_fails(client, monkeypatch):
+    record = create_record(client)
+    uploaded = upload(client, record).json()
+    attachment_id = uploaded['attachment']['id']
+    with Session(client.app.state.engine) as session:
+        old_path = report_attachment_path(session.get(ReportAttachment, attachment_id).storage_key)
+
+    def fail_replacement_commit(session):
+        assert any(isinstance(item, ReportAttachment) and item.filename == '更正报告.txt'
+                   for item in session.identity_map.values())
+        raise RuntimeError('simulated commit failure')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, 'commit', fail_replacement_commit)
+        with pytest.raises(RuntimeError, match='simulated commit failure'):
+            client.post(f'/api/reports/{attachment_id}/replace', data={'version': uploaded['record_version']},
+                        files={'file': ('更正报告.txt', b'updated')})
+
+    assert client.get(f'/api/reports/{attachment_id}/file').content == PDF
+    assert list(old_path.parent.iterdir()) == [old_path]
+    assert client.get(f'/api/records/{record["id"]}').json()['version'] == uploaded['record_version']
+
+
 def test_reports_are_readable_to_other_users_but_only_creator_or_admin_can_modify(client):
     record = create_record(client)
     attachment = upload(client, record).json()['attachment']
@@ -102,6 +160,8 @@ def test_reports_are_readable_to_other_users_but_only_creator_or_admin_can_modif
     assert client.get(f'/api/records/{record["id"]}/reports').status_code == 200
     assert client.get(f'/api/reports/{attachment["id"]}/file').content == PDF
     assert upload(client, record, version=2).status_code == 403
+    assert client.post(f'/api/reports/{attachment["id"]}/replace', data={'version': 2},
+                       files={'file': ('更正报告.pdf', PDF)}).status_code == 403
     assert client.delete(f'/api/reports/{attachment["id"]}?version=2').status_code == 403
     client.post('/api/logout')
     assert client.get(f'/api/reports/{attachment["id"]}/file').status_code == 401

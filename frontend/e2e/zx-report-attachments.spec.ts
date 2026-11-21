@@ -56,10 +56,10 @@ test('报告附件可一次拖入多个文件，新增和已保存的记录都�
   expect(uploaded.map((attachment: { filename: string }) => attachment.filename)).toEqual([...draftNames, ...additionalNames])
   await page.getByRole('button', { name: '返回台账', exact: true }).last().click()
   await row.getByRole('button', { name: '检验', exact: true }).click()
-  const readonlyReports = page.getByRole('dialog', { name: `检验报告附件 · ${name}`, exact: true })
-  await expect(readonlyReports.getByText('补充材料.txt', { exact: true })).toBeVisible()
-  await expect(readonlyReports.locator('.report-attachment-drop')).toHaveCount(0)
-  await expect(readonlyReports.getByLabel('上传报告文件', { exact: true })).toHaveCount(0)
+  const ledgerReports = page.getByRole('dialog', { name: `检验报告附件 · ${name}`, exact: true })
+  await expect(ledgerReports.getByText('补充材料.txt', { exact: true })).toBeVisible()
+  await expect(ledgerReports.locator('.report-attachment-drop')).toBeVisible()
+  await expect(ledgerReports.getByLabel('上传报告文件', { exact: true })).toBeEnabled()
 })
 
 for (const mode of ['单条', '批量', '失败重试', '批量失败重试', '批量无效附件', '失败重试已保存合并']) test(`新增记录可先选报告附件，保存并核对后可查看附件 ${mode}`, async ({ page }) => {
