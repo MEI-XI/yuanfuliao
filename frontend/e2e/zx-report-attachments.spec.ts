@@ -2,6 +2,66 @@ import { test, expect } from '@playwright/test'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 
+test('报告附件可一次拖入多个文件，新增和已保存的记录都能保存', async ({ page }) => {
+  if ((await (await page.request.get('/api/setup')).json()).required) {
+    await page.request.post('/api/setup', { data: { username: 'admin', password: 'browser-test-password' } })
+  }
+  await page.goto('/')
+  await page.getByLabel('账号', { exact: true }).fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('browser-test-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.getByRole('button', { name: '退出', exact: true })).toBeVisible()
+  const name = `拖入报告-${Date.now()}`
+  const ledger = await (await page.request.post('/api/ledgers', { data: { name } })).json()
+  await page.reload()
+  await page.getByRole('button', { name: `进入${name}` }).click()
+  await page.getByRole('button', { name: '上传与录入', exact: true }).click()
+  await page.getByLabel('物料名称、型号', { exact: true }).fill(name)
+  await page.getByRole('radio', { name: '检验', exact: true }).check()
+
+  const reports = page.getByRole('region', { name: '报告附件', exact: true })
+  const dropArea = reports.locator('.report-attachment-drop')
+  await expect(dropArea).toBeVisible()
+  expect((await dropArea.boundingBox())?.height).toBeGreaterThanOrEqual(160)
+  async function dropReports(names: string[]) {
+    const dataTransfer = await page.evaluateHandle(filenames => {
+      const transfer = new DataTransfer()
+      for (const filename of filenames) transfer.items.add(new File(['报告内容：合格'], filename, { type: 'text/plain' }))
+      return transfer
+    }, names)
+    await dropArea.dispatchEvent('dragenter', { dataTransfer })
+    await dropArea.dispatchEvent('dragover', { dataTransfer })
+    await dropArea.dispatchEvent('drop', { dataTransfer })
+    await dataTransfer.dispose()
+  }
+
+  const draftNames = ['供应商报告.txt', '合格证.txt']
+  await dropReports(draftNames)
+  for (const filename of draftNames) {
+    await expect(reports.getByRole('button', { name: `查看待上传报告 ${filename}`, exact: true })).toBeVisible()
+  }
+  expect(await (await page.request.get(`/api/ledgers/${ledger.id}/records`)).json()).toHaveLength(0)
+  await page.getByRole('button', { name: '保存记录', exact: true }).click()
+  const row = page.getByRole('row').filter({ hasText: name })
+  await expect(row).toContainText('2份报告')
+  await row.getByRole('button', { name: '核对 / 编辑', exact: true }).click()
+
+  const additionalNames = ['修订报告.txt', '补充材料.txt']
+  await dropReports(additionalNames)
+  for (const filename of additionalNames) {
+    await expect(reports.getByRole('button', { name: `查看报告 ${filename}`, exact: true })).toBeVisible()
+  }
+  const [record] = await (await page.request.get(`/api/ledgers/${ledger.id}/records`)).json()
+  const uploaded = await (await page.request.get(`/api/records/${record.id}/reports`)).json()
+  expect(uploaded.map((attachment: { filename: string }) => attachment.filename)).toEqual([...draftNames, ...additionalNames])
+  await page.getByRole('button', { name: '返回台账', exact: true }).last().click()
+  await row.getByRole('button', { name: '检验', exact: true }).click()
+  const readonlyReports = page.getByRole('dialog', { name: `检验报告附件 · ${name}`, exact: true })
+  await expect(readonlyReports.getByText('补充材料.txt', { exact: true })).toBeVisible()
+  await expect(readonlyReports.locator('.report-attachment-drop')).toHaveCount(0)
+  await expect(readonlyReports.getByLabel('上传报告文件', { exact: true })).toHaveCount(0)
+})
+
 for (const mode of ['单条', '批量', '失败重试', '批量失败重试', '批量无效附件', '失败重试已保存合并']) test(`新增记录可先选报告附件，保存并核对后可查看附件 ${mode}`, async ({ page }) => {
   if ((await (await page.request.get('/api/setup')).json()).required) await page.request.post('/api/setup', { data: { username: 'admin', password: 'browser-test-password' } })
   await page.goto('/')

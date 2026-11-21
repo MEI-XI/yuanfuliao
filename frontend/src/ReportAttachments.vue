@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { z } from 'zod'
-import { api, raw } from './api'
+import { api, ApiError, raw } from './api'
 
 const PdfReportViewer = defineAsyncComponent(() => import('./PdfReportViewer.vue'))
 
@@ -20,7 +20,9 @@ const emit = defineEmits<{ recordChanged: [metadata: RecordMetadata]; filesChang
 const attachments = ref<Attachment[]>([])
 const loading = ref(false)
 const busy = ref(false)
+const dragging = ref(false)
 const error = ref('')
+const reportExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.rtf']
 const previewOpen = ref(false)
 const previewName = ref('')
 const previewLoading = ref(false)
@@ -36,6 +38,7 @@ function clearPreview() {
   previewLoading.value = false
 }
 watch(previewOpen, value => { if (!value) clearPreview() })
+watch(() => props.editable, editable => { if (!editable) dragging.value = false })
 onBeforeUnmount(clearPreview)
 watch(() => props.recordId, async recordId => {
   attachments.value = []; error.value = ''; previewOpen.value = false
@@ -51,30 +54,74 @@ watch(() => props.recordId, async recordId => {
   }
 }, { immediate: true })
 
-async function upload(event: Event) {
+function chooseReports(event: Event) {
   const input = event.target
   if (!(input instanceof HTMLInputElement)) return
-  const file = input.files?.[0]
+  const files = Array.from(input.files || [])
   input.value = ''
+  void uploadReports(files)
+}
+
+function dragOver(event: DragEvent) {
+  if (!event.dataTransfer?.types.includes('Files')) return
+  dragging.value = !busy.value && !loading.value
+  event.dataTransfer.dropEffect = dragging.value ? 'copy' : 'none'
+}
+
+function dragLeave(event: DragEvent) {
+  if (event.relatedTarget instanceof Node && (event.currentTarget as HTMLElement).contains(event.relatedTarget)) return
+  dragging.value = false
+}
+
+function dropReports(event: DragEvent) {
+  dragging.value = false
+  void uploadReports(Array.from(event.dataTransfer?.files || []))
+}
+
+async function uploadReports(files: File[]) {
+  if (!files.length || !props.editable || busy.value || loading.value) return
   const recordId = props.recordId
-  if (!file || !props.editable) return
+  let version = props.recordVersion
   error.value = ''
-  if (file.size > 20 * 1024 * 1024) { error.value = '单个报告文件不能超过20 MiB'; return }
-  if (recordId === null) { emit('filesChanged', [...props.pendingFiles, file]); return }
-  if (props.recordVersion === null) return
-  const body = new FormData()
-  body.append('file', file)
-  body.append('version', String(props.recordVersion))
+  const failures: string[] = []
+  const accepted = files.filter(file => {
+    if (file.size > 20 * 1024 * 1024) failures.push(`“${file.name}”超过 20 MiB`)
+    else if (!reportExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) failures.push(`“${file.name}”的格式不支持`)
+    else return true
+    return false
+  })
+  if (!accepted.length || recordId === null) {
+    if (accepted.length) emit('filesChanged', [...props.pendingFiles, ...accepted])
+    error.value = failures.join('。')
+    return
+  }
+  if (version === null) return
   busy.value = true
   try {
-    const result = await api(`/records/${recordId}/reports`, metadataSchema.extend({ attachment: attachmentSchema }), { method: 'POST', body })
-    if (props.recordId === recordId) {
-      attachments.value.push(result.attachment)
-      emit('recordChanged', result)
+    for (const [index, file] of accepted.entries()) {
+      if (props.recordId !== recordId) return
+      const body = new FormData()
+      body.append('file', file)
+      body.append('version', String(version))
+      try {
+        const result = await api(`/records/${recordId}/reports`, metadataSchema.extend({ attachment: attachmentSchema }), { method: 'POST', body })
+        if (props.recordId !== recordId) return
+        version = result.record_version
+        attachments.value.push(result.attachment)
+        emit('recordChanged', result)
+      } catch (cause) {
+        failures.push(`“${file.name}”：${cause instanceof Error ? cause.message : '报告上传失败'}`)
+        if (!(cause instanceof ApiError) || ![400, 413, 415, 422].includes(cause.status)) {
+          const remaining = accepted.length - index - 1
+          if (remaining) failures.push(`还有 ${remaining} 个附件未上传，请核对附件列表后重试`)
+          break
+        }
+      }
     }
-  } catch (cause) {
-    if (props.recordId === recordId) error.value = cause instanceof Error ? cause.message : '报告上传失败'
-  } finally { busy.value = false }
+  } finally {
+    if (props.recordId === recordId) error.value = failures.join('。')
+    busy.value = false
+  }
 }
 
 async function remove(attachment: Attachment) {
@@ -141,9 +188,13 @@ function fileSize(size: number) {
 
 <template>
   <section class="report-attachments" aria-label="报告附件">
-    <div class="reports-heading"><div><h3>报告附件</h3><p class="muted">保存供应商报告、合格证或其他查验资料，可直接查看。</p></div>
-      <label v-if="editable" class="report-upload" :class="{ disabled: busy || loading }">上传报告
-        <input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.rtf" aria-label="上传报告文件" :disabled="busy || loading" @change="upload">
+    <div class="reports-heading"><h3>报告附件</h3><p class="muted">保存供应商报告、合格证或其他查验资料，可直接查看。</p></div>
+    <div v-if="editable" class="report-attachment-drop" :class="{ dragging, disabled: busy || loading }"
+      role="region" aria-label="报告附件拖入上传区域" @dragover.prevent="dragOver" @dragleave="dragLeave" @drop.prevent="dropReports">
+      <strong>{{ dragging ? '松开以上传附件' : '将报告附件拖到这里' }}</strong>
+      <span>支持一次拖入多份文件</span>
+      <label class="report-upload" :class="{ disabled: busy || loading }">选择报告文件
+        <input type="file" :accept="reportExtensions.join(',')" multiple aria-label="上传报告文件" :disabled="busy || loading" @change="chooseReports">
       </label>
     </div>
     <p v-if="recordId === null || pendingFiles.length" class="muted">已选文件随当前记录保存上传；关闭或刷新页面前请先保存。</p>
@@ -178,5 +229,30 @@ function fileSize(size: number) {
 </template>
 
 <style scoped>
-.report-attachments{margin-top:24px;padding:20px 28px 24px;border-top:1px solid var(--line)}.reports-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}.reports-heading h3{margin:0 0 6px}.reports-heading p{margin:0}.report-upload{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:10px 16px;min-height:42px;background:var(--teal);color:#fff;border-radius:6px;cursor:pointer;overflow:hidden}.report-upload input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:inherit}.report-upload:focus-within{outline:3px solid #087f8c66;outline-offset:2px}.report-upload.disabled{opacity:.55;cursor:default}.report-formats{font-size:13px}.report-list{list-style:none;margin:18px 0 0;padding:0}.report-list li{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:10px}.report-thumbnail{width:64px;height:64px;flex-shrink:0;padding:0;background:#edf3f5;color:#496575;overflow:hidden}.report-thumbnail img{width:100%;height:100%;object-fit:contain}.report-thumbnail span{font-size:13px;font-weight:700}.report-details{display:flex;flex:1;min-width:0;flex-direction:column;gap:6px}.report-details strong{overflow-wrap:anywhere}.report-details span{font-size:12px}.report-actions{display:flex;align-items:center;gap:14px}.report-actions a{color:var(--teal);text-decoration:none}.report-image-preview{display:block;max-width:100%;max-height:72vh;object-fit:contain;margin:auto}.report-pdf-preview{width:100%;height:70vh;border:1px solid var(--line)}.report-text-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow:auto;font-family:inherit}@media(max-width:600px){.reports-heading{align-items:flex-start}.report-list li{flex-wrap:wrap}.report-actions{width:100%;justify-content:flex-end}.report-details span{line-height:1.5}}
+.report-attachments{margin-top:24px;padding:20px 28px 24px;border-top:1px solid var(--line)}.reports-heading h3{margin:0 0 6px}.reports-heading p{margin:0}.report-upload{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:10px 16px;min-height:42px;background:var(--teal);color:#fff;border-radius:6px;cursor:pointer;overflow:hidden}.report-upload input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:inherit}.report-upload:focus-within{outline:3px solid #087f8c66;outline-offset:2px}.report-upload.disabled{opacity:.55;cursor:default}.report-formats{font-size:13px}.report-list{list-style:none;margin:18px 0 0;padding:0}.report-list li{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:10px}.report-thumbnail{width:64px;height:64px;flex-shrink:0;padding:0;background:#edf3f5;color:#496575;overflow:hidden}.report-thumbnail img{width:100%;height:100%;object-fit:contain}.report-thumbnail span{font-size:13px;font-weight:700}.report-details{display:flex;flex:1;min-width:0;flex-direction:column;gap:6px}.report-details strong{overflow-wrap:anywhere}.report-details span{font-size:12px}.report-actions{display:flex;align-items:center;gap:14px}.report-actions a{color:var(--teal);text-decoration:none}.report-image-preview{display:block;max-width:100%;max-height:72vh;object-fit:contain;margin:auto}.report-pdf-preview{width:100%;height:70vh;border:1px solid var(--line)}.report-text-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow:auto;font-family:inherit}@media(max-width:600px){.report-list li{flex-wrap:wrap}.report-actions{width:100%;justify-content:flex-end}.report-details span{line-height:1.5}}
+
+.report-attachment-drop {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 160px;
+  margin-top: 16px;
+  padding: 20px 12px;
+  border: 2px dashed #3d9b9c;
+  border-radius: 8px;
+  background: #f0f9f8;
+  color: #526f7a;
+  text-align: center;
+}
+.report-attachment-drop:not(.disabled):is(.dragging, :focus-within) {
+  border-color: var(--teal);
+  background: #ddf2ef;
+}
+.report-attachment-drop strong {
+  color: #087f8c;
+}
+.report-attachment-drop span {
+  font-size: 13px;
+}
 </style>
